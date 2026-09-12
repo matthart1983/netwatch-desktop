@@ -1,0 +1,23 @@
+[package]
+name = "netwatch-desktop"
+version = "0.1.0"
+edition = "2021"
+authors = ["Matt Hartley <matthew.t.hartley@gmail.com>"]
+description = "Native desktop companion for netwatch — Workbench shell over the same collectors as the TUI."
+license = "MIT"
+
+[[bin]]
+name = "netwatch-desktop"
+path = "src/main.rs"
+
+[dependencies]
+# Reuses netwatch's collectors/health/config modules directly instead of
+# reimplementing socket enumeration, RTT probing, or gateway/DNS detection.
+# `default-features = false` skips the eBPF attribution path (netwatch-sdk +
+# aya) — desktop MVP runs on the same lsof/procfs fallback the TUI uses when
+# eBPF is unavailable, avoiding a kernel-capability dependency for a first
+# build.
+netwatch = { package = "netwatch-tui", path = "../netwatch", default-features = false }
+eframe = "0.28"
+egui = "0.28"
+anyhow = "1"
