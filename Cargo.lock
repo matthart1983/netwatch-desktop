@@ -2360,9 +2360,15 @@ name = "netwatch-desktop"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
+ "dirs",
  "eframe",
  "egui",
+ "image",
  "netwatch-tui",
+ "ratatui",
+ "serde",
+ "toml",
 ]
 
 [[package]]

@@ -8,7 +8,7 @@ pub fn rate(bytes_per_sec: f64) -> String {
     } else if bytes_per_sec > 0.0 {
         format!("{bytes_per_sec:.0} B/s")
     } else {
-        "—".to_string()
+        "0 B/s".to_string()
     }
 }
 

@@ -19,5 +19,14 @@ path = "src/main.rs"
 # build.
 netwatch = { package = "netwatch-tui", path = "../netwatch", default-features = false }
 eframe = "0.28"
-egui = "0.28"
+egui = { version = "0.28", features = ["bytemuck"] }
+# Share Netwatch's existing graph magnitude ramp; no second palette algorithm.
+ratatui = { version = "0.27", default-features = false }
+# Native screenshot captures for repeatable visual checks.
+image = { version = "0.25", default-features = false, features = ["png"] }
 anyhow = "1"
+# Desktop layout persistence and export timestamps; already in the lockfile via netwatch.
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dirs = "5"
+chrono = "0.4"
