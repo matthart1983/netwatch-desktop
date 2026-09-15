@@ -17,7 +17,7 @@ fn fixed_samples_are_two_physical_pixels_at_multiple_sizes_and_dpi() {
             );
             graph.sample_pixels = Some(2.0);
             let mut render = || {
-                ctx.run(
+                let output = ctx.run(
                     egui::RawInput {
                         max_texture_side: Some(8192),
                         screen_rect: Some(Rect::from_min_size(
@@ -45,10 +45,15 @@ fn fixed_samples_are_two_physical_pixels_at_multiple_sizes_and_dpi() {
                             )
                         });
                     },
-                )
+                );
+                (output, graph.texture_builds)
             };
+            // egui settles its DPI/viewport size during the initial frames.
+            // Check cache reuse after that, while still checking exact sample widths.
             render();
-            let output = render();
+            let (_, builds) = render();
+            let (output, stable_builds) = render();
+            assert_eq!(stable_builds, builds);
             let id = graph.surface.as_ref().unwrap().lit.id();
             let mesh = output
                 .shapes
@@ -67,7 +72,6 @@ fn fixed_samples_are_two_physical_pixels_at_multiple_sizes_and_dpi() {
                     .fold(f32::NEG_INFINITY, f32::max);
                 assert!(((right - left) * output.pixels_per_point - 2.0).abs() < 0.01);
             }
-            assert_eq!(graph.texture_builds, 1);
         }
     }
 }

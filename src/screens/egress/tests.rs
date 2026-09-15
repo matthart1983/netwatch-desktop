@@ -35,10 +35,33 @@ impl Harness {
     }
 }
 
-fn populated() -> Egress {
-    Egress {
-        data: Some(Arc::new(fixture::snapshot())),
-        ..Default::default()
+struct TestScreen {
+    screen: Egress,
+    _dir: tempfile::TempDir,
+}
+impl std::ops::Deref for TestScreen {
+    type Target = Egress;
+    fn deref(&self) -> &Egress {
+        &self.screen
+    }
+}
+impl std::ops::DerefMut for TestScreen {
+    fn deref_mut(&mut self) -> &mut Egress {
+        &mut self.screen
+    }
+}
+fn populated() -> TestScreen {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("policy.toml");
+    let mut data = fixture::snapshot();
+    std::fs::write(&path, toml::to_string(&data.policy).unwrap()).unwrap();
+    data.policy_path = Some(path);
+    TestScreen {
+        screen: Egress {
+            data: Some(Arc::new(data)),
+            ..Default::default()
+        },
+        _dir: dir,
     }
 }
 
@@ -120,21 +143,14 @@ fn allow_writes_just_that_value() {
     let mut screen = populated();
     let mut h = Harness::new();
     assert!(screen.key(Key::Char('a'), &mut h.cx(&s, None)));
-    match h.commands.last() {
-        Some(Command::EgressAllow {
-            process,
-            rule,
-            summary,
-        }) => {
-            assert_eq!(process, "node");
-            assert_eq!(rule.allow_ip, vec!["203.0.113.9"]);
-            // node's rule already admits port 443, so no port is added.
-            assert!(rule.allow_ports.is_empty());
-            assert!(rule.allow_sni.is_empty());
-            assert_eq!(summary, "allow_ip 203.0.113.9");
-        }
-        other => panic!("unexpected {other:?}"),
-    }
+    assert!(h.commands.is_empty());
+    let edit = screen.pending.as_ref().expect("allow requires review");
+    let policy = edit.policy();
+    let rule = &policy.process["node"];
+    assert!(rule.allow_ip.contains(&"203.0.113.9".into()));
+    assert!(edit.title.contains("allow_ip 203.0.113.9"));
+    assert!(screen.key(Key::Char('y'), &mut h.cx(&s, None)));
+    assert!(matches!(h.commands.last(), Some(Command::EgressWrite(_))));
 }
 
 #[test]
@@ -160,9 +176,13 @@ fn keys_move_fold_filter_and_promote() {
     assert_eq!(screen.show, Show::Drift);
     assert_eq!(screen.tree(&h.cx(&s, None)).1.len(), 2);
     assert!(screen.key(Key::Enter, &mut h.cx(&s, None)));
-    assert!(matches!(h.commands.last(), Some(Command::EgressPromote(p)) if p == "curl"));
+    assert!(h.commands.is_empty());
+    assert!(screen.pending.is_none());
+    assert!(h.toast.as_ref().unwrap().text.contains("nothing to write"));
     assert!(screen.key(Key::Char('P'), &mut h.cx(&s, None)));
-    assert!(matches!(h.commands.last(), Some(Command::EgressPromoteAll)));
+    assert!(h.commands.is_empty());
+    assert!(screen.pending.as_ref().unwrap().title.contains("all"));
+    screen.key(Key::Esc, &mut h.cx(&s, None));
     assert!(screen.key(Key::Char('e'), &mut h.cx(&s, None)));
     assert!(matches!(h.commands.last(), Some(Command::ExportEgress)));
     assert!(!screen.key(Key::Char('q'), &mut h.cx(&s, None)));
@@ -201,16 +221,116 @@ fn destination_keys_act_on_the_selected_row() {
         443,
     ));
     assert!(screen.key(Key::Char('a'), &mut h.cx(&s, None)));
-    assert!(matches!(
-        h.commands.last(),
-        Some(Command::EgressAllow { process, .. }) if process == "firefox"
-    ));
+    assert!(h.commands.is_empty());
+    assert!(screen.pending.as_ref().unwrap().title.contains("firefox"));
+    screen.key(Key::Esc, &mut h.cx(&s, None));
     // Not a drift, so there's nothing to keep warning about.
     assert!(!screen.key(Key::Char('d'), &mut h.cx(&s, None)));
 
     // `w` still promotes the selected row's process.
     assert!(screen.key(Key::Char('w'), &mut h.cx(&s, None)));
-    assert!(matches!(h.commands.last(), Some(Command::EgressPromote(p)) if p == "firefox"));
+    assert!(h.commands.is_empty());
+    assert!(screen.pending.as_ref().unwrap().title.contains("firefox"));
+}
+
+#[test]
+fn every_policy_action_is_blocked_in_demo() {
+    let mut s = Snapshot::empty();
+    s.demo = true;
+    let mut screen = populated();
+    let mut h = Harness::new();
+    screen.selected = Some(Sel::Process("node".into()));
+    let path = screen
+        .data
+        .as_ref()
+        .unwrap()
+        .policy_path
+        .as_ref()
+        .unwrap()
+        .clone();
+    let before = std::fs::read(&path).unwrap();
+    for key in [Key::Enter, Key::Char('w'), Key::Char('P'), Key::Char('x')] {
+        assert!(screen.key(key, &mut h.cx(&s, None)));
+        assert!(screen.pending.is_none());
+        assert!(h.commands.is_empty());
+        assert!(h.toast.as_ref().unwrap().text.contains("demo"));
+    }
+    screen.selected = Some(Sel::Dest("node".into(), "203.0.113.9".into(), 443));
+    assert!(screen.key(Key::Char('a'), &mut h.cx(&s, None)));
+    assert!(screen.pending.is_none());
+    assert!(h.commands.is_empty());
+    assert_eq!(std::fs::read(path).unwrap(), before);
+}
+
+#[test]
+fn combined_review_cancel_and_remove_require_explicit_confirmation() {
+    let s = Snapshot::empty();
+    let mut screen = populated();
+    let mut h = Harness::new();
+    screen.key(Key::Char('P'), &mut h.cx(&s, None));
+    assert!(screen.pending.is_some());
+    render(&mut screen, &s);
+    // Neither Enter nor a second P writes the pending proposal.
+    screen.key(Key::Enter, &mut h.cx(&s, None));
+    screen.key(Key::Char('P'), &mut h.cx(&s, None));
+    assert!(h.commands.is_empty());
+    screen.key(Key::Esc, &mut h.cx(&s, None));
+    assert!(screen.pending.is_none());
+    screen.key(Key::Char('y'), &mut h.cx(&s, None));
+    assert!(h.commands.is_empty());
+    screen.selected = Some(Sel::Process("node".into()));
+    screen.key(Key::Char('x'), &mut h.cx(&s, None));
+    assert!(!screen
+        .pending
+        .as_ref()
+        .unwrap()
+        .policy()
+        .process
+        .contains_key("node"));
+    assert!(h.commands.is_empty());
+    screen.key(Key::Char('y'), &mut h.cx(&s, None));
+    assert!(screen.pending.is_none());
+    assert!(matches!(h.commands.as_slice(), [Command::EgressWrite(_)]));
+}
+
+#[test]
+fn allow_uses_disk_rule_and_warns_when_creating_a_rule() {
+    let s = Snapshot::empty();
+    let mut screen = populated();
+    let mut h = Harness::new();
+    let path = screen
+        .data
+        .as_ref()
+        .unwrap()
+        .policy_path
+        .as_ref()
+        .unwrap()
+        .clone();
+    // The snapshot says node has a port restriction; disk is authoritative.
+    std::fs::write(
+        &path,
+        "[process.node]\nallow_ip = [\"10.0.0.1\"]\nallow_ports = []\n",
+    )
+    .unwrap();
+    screen.selected = Some(Sel::Dest("node".into(), "203.0.113.9".into(), 443));
+    screen.key(Key::Char('a'), &mut h.cx(&s, None));
+    let edit = screen.pending.as_ref().unwrap();
+    assert!(edit.policy().process["node"].allow_ports.is_empty());
+    assert!(edit.policy().process["node"]
+        .allow_ip
+        .contains(&"10.0.0.1".into()));
+    screen.key(Key::Esc, &mut h.cx(&s, None));
+    screen.selected = Some(Sel::Dest(
+        "firefox".into(),
+        "www.cloudflare.com".into(),
+        443,
+    ));
+    screen.key(Key::Char('a'), &mut h.cx(&s, None));
+    let edit = screen.pending.as_ref().unwrap();
+    assert!(edit.warnings[0].contains("Creates a rule for firefox"));
+    // The other Firefox destination uses ECH: unreadable, not drift.
+    assert!(edit.warnings[0].contains("0 other observed destinations will become drift"));
+    assert!(h.commands.is_empty());
 }
 
 #[test]

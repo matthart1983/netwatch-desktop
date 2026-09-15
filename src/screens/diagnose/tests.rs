@@ -121,6 +121,76 @@ fn fixture_has_the_incident() {
 }
 
 #[test]
+fn workflow_test_click_routes_issue_and_disables_running_tests() {
+    let mut d = fixture();
+    let mut issue = d
+        .issues
+        .iter()
+        .find(|i| i.rule == "dns.slow_resolver")
+        .unwrap()
+        .clone();
+    issue.state = IssueState::Open;
+    for running in [false, true] {
+        d.running_tests.clear();
+        if running {
+            d.running_tests
+                .insert(issue.id.clone(), vec!["dns.alt_resolver".into()]);
+        }
+        let ctx = egui::Context::default();
+        let mut commands = Vec::new();
+        let mut frame = |events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(1000.0, 1000.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        workflow::issue_controls(ui, &d, &issue, &mut commands)
+                    });
+                },
+            )
+        };
+        let _ = frame(vec![]);
+        let output = frame(vec![]);
+        let point = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text)
+                    if text
+                        .galley
+                        .text()
+                        .starts_with(if running { "Running" } else { "Run " }) =>
+                {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .expect("test button");
+        for pressed in [true, false] {
+            let _ = frame(vec![
+                egui::Event::PointerMoved(point),
+                egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::default(),
+                },
+            ]);
+        }
+        if running {
+            assert!(commands.is_empty());
+        } else {
+            assert!(
+                matches!(commands.as_slice(), [Command::DiagnoseTest { issue: id, test }] if id == &issue.id && test == "dns.alt_resolver")
+            );
+        }
+    }
+}
+
+#[test]
 fn renders_empty_snapshot() {
     let s = Snapshot::empty();
     let mut screen = Diagnose::default();

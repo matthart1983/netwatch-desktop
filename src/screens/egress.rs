@@ -10,7 +10,7 @@ use crate::backend::{Command, EgressSnapshot, Snapshot};
 use crate::shell::{issue_strip, Cx, Filter, Hint, Key, Nav, Screen, Strip, Tab, Toast};
 use crate::ui_kit::{self, Cell, Column, PanelHead, StripGroup, Table};
 use crate::{format, theme};
-use egui::{pos2, vec2, Align, Color32, FontId, Rect, Sense, Stroke, Ui};
+use egui::{pos2, vec2, Align, Color32, FontId, Rect, Sense, Ui};
 use model::{DestRow, DiffKind, Line, MatchKind, ProcRow, Scope, Show};
 use netwatch::collectors::egress::Verdict;
 use std::collections::{HashMap, HashSet};
@@ -49,6 +49,7 @@ pub struct Egress {
     acknowledged: HashMap<(String, String, u16), Instant>,
     /// Replaces the snapshot's egress data (tests).
     pub data: Option<Arc<EgressSnapshot>>,
+    pending: Option<crate::egress_policy::Edit>,
 }
 
 impl Default for Egress {
@@ -64,6 +65,7 @@ impl Default for Egress {
             acknowledged: HashMap::new(),
             selected: None,
             data: None,
+            pending: None,
         }
     }
 }
@@ -289,8 +291,15 @@ impl Egress {
         let Some((process, dest)) = target else {
             return false;
         };
-        let e = self.egress(cx.s);
-        let existing = e.policy.as_ref().and_then(|p| p.process.get(&process));
+        let file = match self.policy_file(cx) {
+            Ok(file) => file,
+            Err(error) => {
+                *cx.toast = Some(Toast::err(error));
+                return true;
+            }
+        };
+        let existing = file.policy.process.get(&process);
+        let creates_rule = existing.is_none();
         let Some(allow) = model::allow_for(existing, &dest.dest) else {
             *cx.toast = Some(Toast::err(format!(
                 "✕ {} has no name, address or asn to allow",
@@ -298,11 +307,16 @@ impl Egress {
             )));
             return true;
         };
-        cx.run(Command::EgressAllow {
-            process,
-            rule: allow.rule,
-            summary: allow.summary,
+        let edit = file.merge(&[(process.clone(), allow.rule)], format!("Allow {} for {process}", allow.summary)).map(|mut edit| {
+            if creates_rule {
+                let mut classifier = netwatch::collectors::egress::EgressProfiler::new();
+                classifier.set_policy(Some(edit.policy()));
+                let others = self.egress(cx.s).profiles.iter().filter(|p| p.process == process).flat_map(|p| p.dests.values()).filter(|d| matches!(classifier.verdict(&process, d), Verdict::Drift)).count();
+                edit.warnings.push(format!("Creates a rule for {process} · {others} other observed destinations will become drift. The linter warns; it does not block traffic."));
+            }
+            edit
         });
+        self.review(cx, edit);
         true
     }
 
@@ -322,10 +336,100 @@ impl Egress {
     fn promote(&mut self, cx: &mut Cx) -> bool {
         match self.selected_process() {
             Some(process) => {
-                cx.run(Command::EgressPromote(process));
+                let edit = self.policy_file(cx).and_then(|file| {
+                    let rule = self
+                        .egress(cx.s)
+                        .promotable
+                        .get(&process)
+                        .ok_or_else(|| format!("nothing observed for {process}"))?;
+                    file.merge(
+                        &[(process.clone(), rule.clone())],
+                        format!("Promote {process}"),
+                    )
+                });
+                self.review(cx, edit);
                 true
             }
             None => false,
+        }
+    }
+
+    fn policy_file(&self, cx: &Cx) -> Result<crate::egress_policy::PolicyFile, String> {
+        if cx.s.demo {
+            return Err("demo mode: policy writes are disabled".into());
+        }
+        let path = self
+            .egress(cx.s)
+            .policy_path
+            .as_deref()
+            .ok_or("policy path unavailable")?;
+        crate::egress_policy::PolicyFile::read(path)
+    }
+
+    fn review(&mut self, cx: &mut Cx, result: Result<crate::egress_policy::Edit, String>) {
+        match result {
+            Ok(edit) => self.pending = Some(edit),
+            Err(error) => *cx.toast = Some(Toast::err(error)),
+        }
+    }
+
+    fn promote_all(&mut self, cx: &mut Cx) {
+        let result = self.policy_file(cx).and_then(|file| {
+            let mut rules: Vec<_> = self
+                .egress(cx.s)
+                .promotable
+                .iter()
+                .map(|(p, r)| (p.clone(), r.clone()))
+                .collect();
+            rules.sort_by(|a, b| a.0.cmp(&b.0));
+            let title = format!("Promote all {} processes", rules.len());
+            file.merge(&rules, title)
+        });
+        self.review(cx, result);
+    }
+
+    fn remove_rule(&mut self, cx: &mut Cx) -> bool {
+        let Some(process) = self.selected_process() else {
+            return false;
+        };
+        let result = self.policy_file(cx).and_then(|file| file.remove(&process));
+        self.review(cx, result);
+        true
+    }
+
+    fn confirm(&mut self, cx: &mut Cx) {
+        if let Some(edit) = self.pending.take() {
+            cx.run(Command::EgressWrite(Box::new(edit)));
+        }
+    }
+
+    fn draw_review(&mut self, ui: &mut Ui, cx: &mut Cx) {
+        let Some(edit) = &self.pending else {
+            return;
+        };
+        ui.heading(&edit.title);
+        ui.label(edit.path().display().to_string());
+        for warning in &edit.warnings {
+            ui.colored_label(theme::warn(), warning);
+        }
+        let mut confirm = false;
+        let mut cancel = false;
+        ui.horizontal(|ui| {
+            confirm = ui.button("y · Write policy").clicked();
+            cancel = ui.button("Esc · Cancel").clicked();
+        });
+        egui::ScrollArea::both()
+            .id_source("egress_review")
+            .show(ui, |ui| {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(edit.diff()).monospace())
+                        .wrap_mode(egui::TextWrapMode::Extend),
+                );
+            });
+        if cancel {
+            self.pending = None;
+        } else if confirm {
+            self.confirm(cx);
         }
     }
 
@@ -503,84 +607,38 @@ impl Egress {
     }
 
     fn diff_section(&self, ui: &mut Ui, e: &EgressSnapshot, process: &str) {
-        ui.horizontal(|ui| {
-            ui_kit::badge(ui, "3");
-            ui.label(ui_kit::strong("policy diff", theme::DATA, theme::accent()));
-            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                ui.label(ui_kit::mono("writes", theme::LABEL, theme::muted()));
-                ui.label(ui_kit::mono("w", theme::LABEL, theme::key_hint()));
-                ui.label(ui_kit::mono("what", theme::LABEL, theme::muted()));
-            });
-        });
-        ui.add_space(2.0);
+        ui_kit::section(ui, "policy draft · w reviews current file");
+        if e.policy_mode.is_some_and(|m| m & 0o022 != 0) {
+            let path = e.policy_path.as_deref().map(home_path).unwrap_or_default();
+            ui.colored_label(theme::error(), format!("Policy refused: group/world-writable · chmod 644 {path}. No changes can be reviewed or written until this is fixed."));
+            return;
+        }
+        let Some(new) = e.promotable.get(process) else {
+            ui.label(format!("nothing observed for {process} · nothing to write"));
+            return;
+        };
         let old = e.policy.as_ref().and_then(|p| p.process.get(process));
-        let refused = e.policy_mode.is_some_and(|m| m & 0o022 != 0);
-        egui::Frame::none()
-            .fill(theme::window_bg())
-            .stroke(Stroke::new(1.0_f32, theme::border()))
-            .rounding(4.0)
-            .inner_margin(egui::Margin::symmetric(6.0, 6.0))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                let Some(new) = e.promotable.get(process) else {
-                    ui.label(ui_kit::mono(
-                        format!("nothing observed for {process} · nothing to write"),
-                        theme::LABEL,
-                        theme::muted(),
-                    ));
-                    return;
-                };
-                for (kind, text) in model::policy_diff(process, old, new) {
-                    let (rect, _) =
-                        ui.allocate_exact_size(vec2(ui.available_width(), 17.0), Sense::hover());
-                    let (sign, color, ground) = match kind {
-                        DiffKind::Context => (" ", theme::text2(), None),
-                        DiffKind::Add => ("+", theme::good(), Some(theme::good())),
-                        DiffKind::Remove => ("-", theme::error(), Some(theme::error())),
-                        DiffKind::Comment => ("+", theme::muted(), Some(theme::good())),
-                    };
-                    if let Some(ground) = ground {
-                        ui.painter()
-                            .rect_filled(rect, 2.0, ground.gamma_multiply(0.14));
-                    }
-                    ui_kit::paint_text(
-                        ui,
-                        Rect::from_min_size(rect.min + vec2(4.0, 0.0), vec2(12.0, rect.height())),
-                        sign,
-                        FontId::monospace(theme::DATA),
-                        color,
-                        Align::Min,
-                    );
-                    ui_kit::paint_text(
-                        ui,
-                        Rect::from_min_max(pos2(rect.left() + 18.0, rect.top()), rect.max),
-                        &text,
-                        FontId::monospace(theme::DATA),
-                        color,
-                        Align::Min,
-                    );
-                }
-                ui.add_space(4.0);
-                ui.label(ui_kit::mono(
-                    format!("w adds {}", model::diff_summary(old, new)),
-                    theme::LABEL,
-                    theme::muted(),
-                ));
-                if refused {
-                    let path = e.policy_path.as_deref().map(home_path).unwrap_or_default();
-                    ui.add(
-                        egui::Label::new(ui_kit::mono(
-                            format!(
-                                "✕ refused · mode {:o} is group/world-writable · chmod 644 {path}",
-                                e.policy_mode.unwrap_or(0)
-                            ),
-                            theme::LABEL,
-                            theme::error(),
-                        ))
-                        .wrap(),
-                    );
-                }
-            });
+        for (kind, text) in model::policy_diff(process, old, new) {
+            let (sign, color) = match kind {
+                DiffKind::Context => (" ", theme::text2()),
+                DiffKind::Add => ("+", theme::good()),
+                DiffKind::Remove => ("-", theme::error()),
+                DiffKind::Comment => (" ", theme::muted()),
+            };
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(format!("{sign}{text}"))
+                        .monospace()
+                        .color(color),
+                )
+                .wrap(),
+            );
+        }
+        ui.label(format!(
+            "observed additions: {}",
+            model::diff_summary(old, new)
+        ));
+        ui.small("Press w for the exact file diff and a write confirmation.");
     }
 }
 
@@ -635,6 +693,9 @@ impl Screen for Egress {
     }
 
     fn status(&self, cx: &Cx) -> Option<Strip> {
+        if self.pending.is_some() {
+            return None;
+        }
         let drifts = self.drifts(cx);
         if drifts.is_empty() {
             return issue_strip(cx.s);
@@ -682,7 +743,17 @@ impl Screen for Egress {
     }
 
     fn draw(&mut self, ui: &mut Ui, cx: &mut Cx) {
+        if self.pending.is_some() {
+            self.draw_review(ui, cx);
+            return;
+        }
         *cx.focus = 0;
+        if cx.s.demo {
+            ui.colored_label(
+                theme::info(),
+                "DEMO · observed host profiles · policy writes disabled",
+            );
+        }
         let (rows, lines, counts) = self.tree(cx);
         let kind_index = match self.kind {
             None => 0,
@@ -769,6 +840,10 @@ impl Screen for Egress {
     }
 
     fn inspector(&mut self, ui: &mut Ui, cx: &mut Cx) {
+        if self.pending.is_some() {
+            ui.label("Review the proposed policy before writing. Esc cancels.");
+            return;
+        }
         let e = self.egress(cx.s).clone();
         let Some(process) = self.selected_process() else {
             ui.label(ui_kit::mono(
@@ -967,7 +1042,7 @@ impl Screen for Egress {
                     &[
                         Hint::new(Key::Enter, format!("promote {process}")),
                         Hint::ch('P', "promote all"),
-                        Hint::ch('w', "write policy"),
+                        Hint::ch('w', "review policy"),
                         Hint::ch('e', "export ndjson"),
                     ],
                 );
@@ -1022,7 +1097,7 @@ impl Screen for Egress {
             ),
             (None, None) => wrap(
                 ui,
-                "no policy file · observe only · P writes one".into(),
+                "no loaded policy · P reviews observed rules".into(),
                 theme::muted(),
             ),
         }
@@ -1083,21 +1158,35 @@ impl Screen for Egress {
     }
 
     fn hints(&self, _cx: &Cx) -> Vec<Hint> {
+        if self.pending.is_some() {
+            return vec![
+                Hint::ch('y', "write reviewed policy"),
+                Hint::new(Key::Esc, "cancel"),
+            ];
+        }
         let mut hints = vec![Hint::glyph(Key::Down, "↑↓", "select")];
         match self.selected {
             Some(Sel::Dest(..)) => hints.push(Hint::new(Key::Enter, "packets")),
             Some(Sel::Process(_)) => hints.push(Hint::new(Key::Enter, "promote")),
             None => {}
         }
-        hints.push(Hint::ch('P', "promote all"));
+        hints.push(Hint::ch('P', "review all"));
         if self.selected.is_some() {
-            hints.push(Hint::ch('w', "write policy"));
+            hints.push(Hint::ch('w', "review policy"));
         }
         hints.push(Hint::ch('e', "export ndjson"));
         hints
     }
 
     fn key(&mut self, key: Key, cx: &mut Cx) -> bool {
+        if self.pending.is_some() {
+            match key {
+                Key::Char('y') => self.confirm(cx),
+                Key::Esc => self.pending = None,
+                _ => {}
+            }
+            return true;
+        }
         match key {
             Key::Up => self.move_by(-1, cx),
             Key::Down => self.move_by(1, cx),
@@ -1107,10 +1196,11 @@ impl Screen for Egress {
             Key::End => self.move_by(isize::MAX, cx),
             Key::Enter if self.query_focused => self.query_focused = false,
             // ↵ on a destination opens its packets (as the inspector says);
-            // only a process row, or `w`, writes the policy.
+            // a process row, or `w`, reviews the proposed policy.
             Key::Enter if matches!(self.selected, Some(Sel::Dest(..))) => return self.packets(cx),
             Key::Enter | Key::Char('w') => return self.promote(cx),
-            Key::Char('P') => cx.run(Command::EgressPromoteAll),
+            Key::Char('P') => self.promote_all(cx),
+            Key::Char('x') => return self.remove_rule(cx),
             Key::Char('e') => cx.run(Command::ExportEgress),
             Key::Space => return self.toggle_fold(),
             Key::Char('z') => self.fold_all(cx),
@@ -1136,10 +1226,31 @@ impl Screen for Egress {
         true
     }
 
+    fn keys(&self, cx: &Cx) -> Vec<Hint> {
+        if self.pending.is_some() {
+            return self.hints(cx);
+        }
+        let mut keys = self.hints(cx);
+        keys.extend([
+            Hint::ch('a', "review allow selected destination"),
+            Hint::ch('d', "keep warning for selected drift"),
+            Hint::ch('x', "review rule removal"),
+            Hint::ch('v', "cycle verdict filter"),
+            Hint::ch('z', "fold/unfold all"),
+            Hint::new(Key::Space, "fold/unfold process"),
+            Hint::ch('/', "filter"),
+        ]);
+        keys
+    }
+
     fn palette(&self, _cx: &Cx) -> Vec<(String, Key)> {
         vec![
             ("promote selected process to policy".into(), Key::Char('w')),
-            ("promote all processes to policy".into(), Key::Char('P')),
+            ("review promotion of all processes".into(), Key::Char('P')),
+            (
+                "review removal of selected process rule".into(),
+                Key::Char('x'),
+            ),
             ("export egress ndjson".into(), Key::Char('e')),
             ("allow drifting destination".into(), Key::Char('a')),
             ("keep warning for drift".into(), Key::Char('d')),

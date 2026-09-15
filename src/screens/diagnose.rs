@@ -11,13 +11,17 @@ use egui::{pos2, vec2, Align, FontId, Rect, Sense, Ui};
 use netwatch::diagnose::issue::{short_time, Issue};
 use netwatch::diagnose::rules;
 
+mod history;
 mod model;
 mod view;
+mod workflow;
 
 #[derive(Default)]
 pub struct Diagnose {
     /// Selected issue, by id, so it survives re-ordering and restarts.
     selected: Option<String>,
+    workflow: workflow::Workflow,
+    history: history::History,
     /// Rule catalogue group collapsed in the navigator.
     catalogue_closed: bool,
     /// Rule catalogue shows every rule rather than the compact list.
@@ -109,6 +113,8 @@ impl Screen for Diagnose {
         if *cx.focus > 2 {
             *cx.focus = 0;
         }
+        self.history.draw(ui, cx);
+        self.workflow.draw(ui, cx);
         let d = &cx.s.diagnose;
         let list = model::ordered(d);
         let current = self.current(cx.s);
@@ -157,6 +163,9 @@ impl Screen for Diagnose {
         }
         view::detail_panel(ui, right, d, current, *cx.focus == 2, &mut clicks);
 
+        for command in clicks.commands {
+            cx.run(command);
+        }
         if let Some(focus) = clicks.focus {
             *cx.focus = focus;
         }

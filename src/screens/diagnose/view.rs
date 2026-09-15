@@ -19,6 +19,7 @@ const CHRONO_ROW: f32 = 18.0;
 pub struct Clicks {
     pub select: Option<String>,
     pub focus: Option<usize>,
+    pub commands: Vec<crate::backend::Command>,
 }
 
 fn font() -> FontId {
@@ -532,6 +533,7 @@ pub fn detail_panel(
                 .id_source("diagnose_detail")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
+                    super::workflow::issue_controls(ui, d, issue, &mut clicks.commands);
                     let width = ui.available_width();
                     if width >= 560.0 {
                         let col = (width - 29.0) / 2.0;
@@ -779,6 +781,36 @@ fn right_column(ui: &mut Ui, d: &DiagnoseSnapshot, issue: &Issue, clicks: &mut C
                 para(ui, &[(&step.text, theme::text(), false)]);
                 if !step.detail.is_empty() {
                     para(ui, &[(&step.detail, theme::muted(), false)]);
+                }
+                if step.kind != StepKind::Apply && issue.state.is_open() {
+                    // Use the original index: offered steps can hide privileged actions.
+                    if let Some(index) = issue
+                        .remediation
+                        .iter()
+                        .position(|s| std::ptr::eq(s, *step))
+                    {
+                        let recorded = issue.verification.as_ref().is_some_and(|v| v.step == index);
+                        ui.push_id(("step_done", index), |ui| {
+                            if ui
+                                .add_enabled(
+                                    !recorded,
+                                    egui::Button::new(if recorded {
+                                        "Completion recorded"
+                                    } else {
+                                        "I've done this"
+                                    }),
+                                )
+                                .clicked()
+                            {
+                                clicks
+                                    .commands
+                                    .push(crate::backend::Command::DiagnoseStepDone {
+                                        issue: issue.id.clone(),
+                                        step: index,
+                                    });
+                            }
+                        });
+                    }
                 }
                 if let Some(applied) = &step.applied {
                     let (line, failed) = model::applied_line(applied, issue.state.is_open());

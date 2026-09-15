@@ -37,7 +37,9 @@ It is not a remote dashboard. There is no server and no second engine. The app l
 
 ## Building
 
-The app depends on the netwatch crate by path, so check both repositories out side by side:
+For **v0.1.0**, use the matching `netwatch-desktop-v0.1.0-source.tar.gz` asset from [Releases](https://github.com/matthart1983/netwatch-desktop/releases/tag/v0.1.0). It includes both repositories' source in the required layout, including the netwatch changes this desktop build needs. Extract it, enter `netwatch-desktop`, and run `cargo build --release --locked`.
+
+For development, the app depends on the netwatch crate by path. Check both repositories out side by side, using a netwatch revision with the Diagnose APIs required by this checkout:
 
 ```sh
 git clone https://github.com/matthart1983/netwatch
@@ -185,7 +187,9 @@ Each tab lists its own keys in the footer and in `?`.
 
 **9 diagnose.** An engine strip (inputs available, baselines ready or learning, rules live) so an empty issue list can be read correctly. Issues in severity order, the chronology, and a detail pane in report order: evidence, ranked probable causes with each check written out, remediation steps, and the condition that closes the issue. `↵` applies a fix where netwatch can (simulated in demo mode, never applied by a live desktop session), `a` acknowledges, `m` mutes for an hour, `o` writes `report.md`, `y` copies.
 
-**0 egress.** Learned destinations per process as a foldable tree with match type (SNI, IP, ASN, ECH), bytes, first and last seen, activity and policy verdict. The inspector shows what was seen and which rule line would admit it. `a` allows one destination, `d` keeps warning for the re-warn interval, `↵` promotes the selected process, `P` promotes all, `w` writes. The policy diff shows the TOML before it is written. A group- or world-writable policy file is refused with the `chmod` to fix it.
+The target strip expands to show configured services and their DNS, TCP, TLS and HTTP probe results. In **Tests and recovery**, each offered test describes its traffic and estimated cost before you run it; running tests and the latest results appear alongside it. **I've done this** records a manual remediation step and lets the engine check recovery, including re-running supporting tests after a minute. **What caused this issue?** saves your answer with the recorded incident when episode recording is enabled.
+
+**0 egress.** Learned destinations per process as a foldable tree with match type (SNI, IP, ASN, ECH), bytes, first and last seen, activity and policy verdict. The inspector shows what was seen and which rule line would admit it. `a` reviews allowing one destination, `d` keeps warning for the re-warn interval, `↵` on a destination opens packets, and `↵` on a process or `w` reviews its promotion. `P` reviews all observed processes together; `x` reviews removing the selected process rule. Every policy change shows the complete file diff before `y` or **Write policy** confirms it; `esc` cancels. Allowing an unruled process explains how many other observed destinations will become drift. Demo mode disables policy writes. Invalid or group/world-writable policy files are refused; the backend also rejects a file changed since preview. Writes preserve existing permission bits, comments and unrestricted ports.
 
 ## Views: full, lite, dense
 
@@ -287,8 +291,11 @@ Design decisions and the reasoning behind them are in [docs/DESIGN-NOTES.md](doc
 - Right-click selects but doesn't open an actions menu, and table columns can't be reordered or resized.
 - App-drawn window chrome is opt-in until edge resizing is checked on more compositors.
 - The path dependency on `../netwatch` means a fresh clone only builds next to a netwatch checkout.
-- `graphs::tests::fixed_samples_are_two_physical_pixels_at_multiple_sizes_and_dpi` fails and needs fixing.
 
 ## License
 
 MIT. IBM Plex and Adwaita Mono are under the SIL Open Font License; their licence files are in `assets/fonts/`.
+
+## Diagnose incidents
+
+Diagnose includes saved incident history, optional cause labels, export preview, test controls, manual-step verification and target-stage results. See [the Diagnose workflow guide](docs/DIAGNOSE.md) for configuration, privacy and validation details.

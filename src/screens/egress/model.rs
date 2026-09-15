@@ -484,12 +484,23 @@ pub fn policy_diff(
             v.iter().map(u16::to_string).collect::<Vec<_>>().join(", ")
         )
     }
-    let merged = ProcessRule {
+    let mut merged = ProcessRule {
         allow_sni: union(old.map_or(&[][..], |r| &r.allow_sni), &new.allow_sni),
         allow_asn: union(old.map_or(&[][..], |r| &r.allow_asn), &new.allow_asn),
         allow_ip: union(old.map_or(&[][..], |r| &r.allow_ip), &new.allow_ip),
-        allow_ports: union(old.map_or(&[][..], |r| &r.allow_ports), &new.allow_ports),
+        allow_ports: if old.is_some_and(|r| r.allow_ports.is_empty()) {
+            Vec::new()
+        } else {
+            union(old.map_or(&[][..], |r| &r.allow_ports), &new.allow_ports)
+        },
     };
+    if old
+        .is_some_and(|r| r.allow_sni.is_empty() && r.allow_asn.is_empty() && r.allow_ip.is_empty())
+    {
+        merged.allow_sni.clear();
+        merged.allow_asn.clear();
+        merged.allow_ip.clear();
+    }
     let mut out = Vec::new();
     let header = if process
         .chars()
@@ -548,7 +559,18 @@ pub fn policy_diff(
 
 /// The one-line summary the toast will carry (`+2 SNI, +1 ports`).
 pub fn diff_summary(old: Option<&ProcessRule>, new: &ProcessRule) -> String {
-    rule_diff(old, new).to_lowercase()
+    let mut additions = new.clone();
+    if old.is_some_and(|r| r.allow_ports.is_empty()) {
+        additions.allow_ports.clear();
+    }
+    if old
+        .is_some_and(|r| r.allow_sni.is_empty() && r.allow_asn.is_empty() && r.allow_ip.is_empty())
+    {
+        additions.allow_sni.clear();
+        additions.allow_asn.clear();
+        additions.allow_ip.clear();
+    }
+    rule_diff(old, &additions).to_lowercase()
 }
 
 #[cfg(test)]

@@ -3,6 +3,7 @@ mod backend;
 mod capture;
 mod connections;
 mod dense;
+mod egress_policy;
 mod format;
 mod graphs;
 mod lite;

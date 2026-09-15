@@ -83,6 +83,9 @@ pub struct EgressSnapshot {
 pub struct DiagnoseSnapshot {
     /// Every tracked issue, including closed and suppressed ones.
     pub issues: Vec<Issue>,
+    pub targets: Vec<netwatch::diagnose::targets::TargetObs>,
+    pub running_tests: HashMap<String, Vec<String>>,
+    pub episode_dir: Option<PathBuf>,
     /// Ids of open, unsuppressed issues in engine order.
     #[allow(dead_code)]
     pub primary: Vec<String>,
@@ -105,6 +108,9 @@ impl Default for DiagnoseSnapshot {
     fn default() -> Self {
         Self {
             issues: vec![],
+            targets: vec![],
+            running_tests: HashMap::new(),
+            episode_dir: None,
             primary: vec![],
             coverage: Default::default(),
             readiness: String::new(),
@@ -345,6 +351,22 @@ impl Snapshot {
         let store = &app.diagnose.baselines;
         let diagnose = DiagnoseSnapshot {
             issues: app.diagnose.engine.issues().to_vec(),
+            targets: app
+                .diagnose
+                .target_prober
+                .fresh(&app.user_config.diagnose_targets)
+                .0
+                .into_iter()
+                .map(|(_, obs)| obs)
+                .collect(),
+            running_tests: app
+                .diagnose
+                .engine
+                .issues()
+                .iter()
+                .map(|i| (i.id.clone(), app.diagnose.tests.running_for(&i.id)))
+                .collect(),
+            episode_dir: app.diagnose.episode_dir.clone(),
             primary: app
                 .diagnose
                 .engine
@@ -586,18 +608,22 @@ pub enum Command {
         csv: String,
     },
     ExportEgress,
-    EgressPromoteAll,
-    EgressPromote(String),
-    /// Additively merge one rule into the policy file (a single-destination
-    /// allow from the flow inspector).
-    EgressAllow {
-        process: String,
-        rule: ProcessRule,
-        summary: String,
-    },
+    EgressWrite(Box<crate::egress_policy::Edit>),
     DiagnoseAck(String),
     DiagnoseMute(String),
     DiagnoseApply(String),
+    DiagnoseTest {
+        issue: String,
+        test: String,
+    },
+    DiagnoseStepDone {
+        issue: String,
+        step: usize,
+    },
+    DiagnoseLabel {
+        issue: String,
+        cause: String,
+    },
     /// Apply and persist the edited configuration.
     SaveConfig(Box<NetwatchConfig>),
 }
@@ -759,7 +785,6 @@ fn reload_policy(app: &mut App, path: &std::path::Path) -> bool {
 }
 
 fn run_command(app: &mut App, command: Command) -> Result<String, String> {
-    use netwatch::collectors::egress;
     match command {
         Command::ToggleRecorder => {
             if app.incident_recorder.is_armed() {
@@ -902,60 +927,14 @@ fn run_command(app: &mut App, command: Command) -> Result<String, String> {
                 .map(|n| format!("✓ exported {} · {n} records", path.display()))
                 .map_err(|e| format!("✕ egress export failed · {e}"))
         }
-        Command::EgressPromoteAll => {
-            let path = egress::default_policy_path().ok_or("✕ promote failed · no config dir")?;
-            let policy = app.egress_profiler.promote();
-            let rules: Vec<(String, ProcessRule)> = policy.process.into_iter().collect();
-            let n = rules.len();
-            egress::merge_rules_into_policy_file(&rules, &path)
-                .map_err(|e| format!("✕ promote failed · {e}"))?;
-            if reload_policy(app, &path) {
-                Ok(format!("✓ promoted {n} processes · {}", path.display()))
+        Command::EgressWrite(edit) => {
+            edit.write(app.diagnose.is_demo())?;
+            if reload_policy(app, edit.path()) {
+                Ok(format!("{} · saved {}", edit.title, edit.path().display()))
             } else {
                 Err(format!(
-                    "✕ promoted but reload refused · check permissions (chmod 644) · {}",
-                    path.display()
-                ))
-            }
-        }
-        Command::EgressPromote(process) => {
-            let path = egress::default_policy_path().ok_or("✕ promote failed · no config dir")?;
-            let rule = app
-                .egress_profiler
-                .promote_one(&process)
-                .ok_or_else(|| format!("✕ nothing observed for {process}"))?;
-            let diff = egress::rule_diff(app.egress_profiler.declared_rule(&process), &rule);
-            egress::merge_rules_into_policy_file(&[(process.clone(), rule)], &path)
-                .map_err(|e| format!("✕ promote failed · {e}"))?;
-            if reload_policy(app, &path) {
-                Ok(format!(
-                    "✓ promoted {process} · {diff} · {}",
-                    path.file_name().unwrap_or_default().to_string_lossy()
-                ))
-            } else {
-                Err(format!(
-                    "✕ promoted but reload refused · chmod 644 {}",
-                    path.display()
-                ))
-            }
-        }
-        Command::EgressAllow {
-            process,
-            rule,
-            summary,
-        } => {
-            let path = egress::default_policy_path().ok_or("✕ allow failed · no config dir")?;
-            egress::merge_rules_into_policy_file(&[(process.clone(), rule)], &path)
-                .map_err(|e| format!("✕ allow failed · {e}"))?;
-            if reload_policy(app, &path) {
-                Ok(format!(
-                    "✓ allowed {summary} for {process} · {}",
-                    path.display()
-                ))
-            } else {
-                Err(format!(
-                    "✕ written but reload refused · chmod 644 {}",
-                    path.display()
+                    "policy saved but reload failed · {}",
+                    edit.path().display()
                 ))
             }
         }
@@ -974,6 +953,9 @@ fn run_command(app: &mut App, command: Command) -> Result<String, String> {
             }
         }
         Command::DiagnoseApply(id) => diagnose_apply(app, &id),
+        Command::DiagnoseTest { issue, test } => app.start_diagnose_test(&issue, &test),
+        Command::DiagnoseStepDone { issue, step } => app.mark_diagnose_step_done(&issue, step),
+        Command::DiagnoseLabel { issue, cause } => app.label_issue(&issue, &cause),
         Command::SaveConfig(config) => {
             let mut config = *config;
             config.validate();

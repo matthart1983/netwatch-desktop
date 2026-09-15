@@ -28,5 +28,7 @@ anyhow = "1"
 # Desktop layout persistence and export timestamps; already in the lockfile via netwatch.
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+toml_edit = "0.22"
+tempfile = "3"
 dirs = "5"
 chrono = "0.4"
