@@ -176,6 +176,8 @@ pub struct Snapshot {
     pub alerts: Arc<Vec<Alert>>,
     pub alert_history: Arc<Vec<Alert>>,
     pub tracked: Arc<Vec<TrackedConnection>>,
+    /// No screen reads it since stats stopped mixing DNS buckets into the rtt plot.
+    #[allow(dead_code)]
     pub dns_analytics: Arc<DnsAnalytics>,
     pub egress: Arc<EgressSnapshot>,
     pub config: Arc<NetwatchConfig>,
@@ -811,15 +813,24 @@ fn run_command(app: &mut App, command: Command) -> Result<String, String> {
         Command::SetBpf(filter) => {
             let filter = filter.filter(|f| !f.trim().is_empty());
             app.bpf_filter_active = filter.clone();
-            let iface = app.capture_interface.clone();
-            if app.packet_collector.capture_requested() {
+            let label = filter.as_deref().unwrap_or("cleared");
+            // The crate compiles the filter on the capture thread, so the
+            // result arrives later as the capture error; don't claim success.
+            // A stopped capture stays stopped and uses it on the next start;
+            // one that just failed to compile the old filter was requested,
+            // so it retries with the new one.
+            let bpf_failed = app
+                .packet_collector
+                .get_error()
+                .is_some_and(|e| e.contains("BPF"));
+            if app.packet_collector.capture_requested() || bpf_failed {
+                let iface = app.capture_interface.clone();
                 app.packet_collector.stop_capture();
-            }
-            app.packet_collector
-                .start_capture(&iface, filter.as_deref());
-            match app.packet_collector.get_error() {
-                Some(e) if e.contains("BPF") => Err(format!("✕ {e}")),
-                _ => Ok(format!("bpf {}", filter.as_deref().unwrap_or("cleared"))),
+                app.packet_collector
+                    .start_capture(&iface, filter.as_deref());
+                Ok(format!("bpf {label} · compiling, capture restarting"))
+            } else {
+                Ok(format!("bpf {label} · applies when capture starts"))
             }
         }
         Command::SetCaptureInterface(name) => {

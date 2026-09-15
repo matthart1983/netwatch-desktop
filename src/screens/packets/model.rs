@@ -33,6 +33,8 @@ pub enum Narrow {
     Off,
     AllFindings,
     Finding(String),
+    /// `M`: bookmarked packets only.
+    Bookmarks,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -224,6 +226,15 @@ pub fn qtype_name(qtype: u16) -> String {
     }
 }
 
+/// A JA4 fingerprint with the client the crate's database names for it:
+/// `t13d… (Chromium Browser)`, or the bare fingerprint when unknown.
+pub fn ja4_label(ja4: &str) -> String {
+    match netwatch::dpi::ja4_db::lookup(ja4) {
+        Some(name) => format!("{ja4} ({name})"),
+        None => ja4.to_string(),
+    }
+}
+
 /// The l7 reading of a flow's classification (the crate's summary is
 /// private; this is the desktop's lowercase, `·`-joined version).
 pub fn l7_summary(ap: &AppProtocol) -> String {
@@ -239,13 +250,13 @@ pub fn l7_summary(ap: &AppProtocol) -> String {
             Some("tls".into()),
             sni.as_ref().map(|s| format!("sni {s}")),
             alpn.as_ref().map(|a| a.to_string()),
-            ja4.as_ref().map(|j| format!("ja4 {j}")),
+            ja4.as_ref().map(|j| format!("ja4 {}", ja4_label(j))),
             ech.then(|| "ech".into()),
         ]),
         AppProtocol::Quic { sni, ech, ja4 } => join(vec![
             Some("quic".into()),
             sni.as_ref().map(|s| format!("sni {s}")),
-            ja4.as_ref().map(|j| format!("ja4q {j}")),
+            ja4.as_ref().map(|j| format!("ja4q {}", ja4_label(j))),
             ech.then(|| "ech".into()),
         ]),
         AppProtocol::Http {
@@ -460,6 +471,7 @@ pub fn build(
             Narrow::Off => true,
             Narrow::AllFindings => finding.is_some(),
             Narrow::Finding(label) => finding.as_ref().is_some_and(|(_, l)| l == label),
+            Narrow::Bookmarks => bookmarks.contains(&p.id),
         };
         let info = info_text(p, &notes);
         if bookmarks.contains(&p.id) {
@@ -536,6 +548,15 @@ pub fn filter_error(text: &str) -> Option<String> {
         }
     }
     Some("terms need and / or between them".into())
+}
+
+/// `N` when `expr` is exactly the stream filter `stream N`.
+pub fn stream_of_filter(expr: &str) -> Option<u32> {
+    let mut words = expr.split_whitespace();
+    match (words.next(), words.next(), words.next()) {
+        (Some(w), Some(n), None) if w.eq_ignore_ascii_case("stream") => n.parse().ok(),
+        _ => None,
+    }
 }
 
 /// A navigator or drill filter as a display-filter expression.

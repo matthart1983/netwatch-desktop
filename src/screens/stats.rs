@@ -710,20 +710,11 @@ impl Stats {
     }
 
     fn rtt_panel(&self, ui: &mut Ui, rect: Rect, s: &Snapshot, focused: bool) {
-        let (mut samples, source) = model::rtt_samples(s);
-        samples.retain(|v| v.is_finite() && *v >= 0.0);
-        samples.sort_by(|a, b| a.total_cmp(b));
-        let dns = s.dns_analytics.latency_buckets;
-        let dns_n: u64 = dns.iter().sum();
-        let mut meta = format!(
-            "{source} · {} sample{}",
-            model::grouped(samples.len() as u64),
-            if samples.len() == 1 { "" } else { "s" }
-        );
-        if dns_n > 0 {
-            meta.push_str(&format!(" · dns {} bucketed", model::grouped(dns_n)));
-        }
-        let bins = model::histogram(&samples, &dns);
+        let model::Rtt {
+            samples,
+            bins,
+            meta,
+        } = model::rtt(s);
         let p = |q| model::percentile(&samples, q);
         let (p50, p90, p99) = (p(0.5), p(0.9), p(0.99));
         let tail = p99.is_some_and(|v| v > TAIL_THRESHOLD_MS);
@@ -735,10 +726,10 @@ impl Stats {
                 .meta(&meta)
                 .focused(focused),
             |ui| {
-                if samples.is_empty() && dns_n == 0 {
+                if samples.is_empty() {
                     empty_note(
                         ui,
-                        "no handshake or dns samples yet — rtt needs packet capture",
+                        "no handshake samples yet — rtt needs packet capture or socket handshakes",
                     );
                     return;
                 }
@@ -822,11 +813,7 @@ impl Stats {
                 text(
                     ui,
                     line,
-                    if samples.is_empty() {
-                        "log axis · no exact samples for percentiles"
-                    } else {
-                        "log axis"
-                    },
+                    "log axis",
                     theme::LABEL,
                     theme::muted(),
                     Align::Max,
@@ -927,6 +914,15 @@ impl Screen for Stats {
             Hint::glyph(Key::Char(']'), "[ ]", "window"),
             Hint::ch('u', "unit"),
             Hint::ch('e', "export"),
+        ]
+    }
+
+    fn keys(&self, _cx: &Cx) -> Vec<Hint> {
+        vec![
+            Hint::ch(']', "next window (5m · 15m · session)"),
+            Hint::ch('[', "previous window"),
+            Hint::ch('u', "bytes / frames"),
+            Hint::ch('e', "export csv"),
         ]
     }
 

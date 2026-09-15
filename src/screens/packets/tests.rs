@@ -182,7 +182,16 @@ fn renders_populated_fixture_and_follows_tail() {
     assert_eq!(info.index, 7);
     assert_eq!(info.ja4_flows, 1);
     assert_eq!(info.handshake_ms, Some(1.8));
+    // A plain selection adds no crumb; only an applied stream filter does.
+    assert!(screen.crumbs(&h.cx(&s, None)).is_empty());
+    screen.key(Key::Enter, &mut h.cx(&s, None));
+    assert_eq!(screen.applied, "stream 7");
     assert_eq!(screen.crumbs(&h.cx(&s, None)), vec!["stream 7".to_string()]);
+    assert!(screen
+        .crumbs(&h.cx(&s, Some(&Filter::Stream(7))))
+        .is_empty());
+    screen.key(Key::Esc, &mut h.cx(&s, None));
+    assert_eq!(screen.applied, "");
     assert_eq!(screen.built.warns, 1);
     assert_eq!(screen.built.errors, 1);
     assert_eq!(screen.built.decrypted, 13);
@@ -210,11 +219,37 @@ fn findings_bookmarks_and_narrowing() {
     screen.refresh(&s);
     assert_eq!(screen.built.rows.len(), 2);
     assert!(screen.built.bookmark_labels[&41].starts_with("retransmission of #11"));
+    // Bookmarks are session-only: ids restart each launch.
     let saved = screen.save().unwrap();
+    assert!(!saved.contains_key("bookmarks"));
     let mut restored = Packets::default();
-    restored.restore(&saved);
-    assert!(restored.bookmarks.contains(&41));
+    let mut old = saved.clone();
+    old.insert("bookmarks".into(), toml::Value::Array(vec![41.into()]));
+    restored.restore(&old);
+    assert!(restored.bookmarks.is_empty());
     assert!(!restored.follow);
+    // ] / [ jump between bookmarks; M narrows to them.
+    screen.key(Key::Char('x'), &mut h.cx(&s, None));
+    screen.refresh(&s);
+    screen.select(1);
+    screen.key(Key::Char('m'), &mut h.cx(&s, None));
+    screen.refresh(&s);
+    screen.key(Key::Char(']'), &mut h.cx(&s, None));
+    assert_eq!(screen.selected, Some(41));
+    screen.key(Key::Char('['), &mut h.cx(&s, None));
+    assert_eq!(screen.selected, Some(1));
+    h.toast = None;
+    screen.key(Key::Char('['), &mut h.cx(&s, None));
+    assert!(h.toast.as_ref().is_some_and(|t| !t.ok));
+    screen.key(Key::Char('M'), &mut h.cx(&s, None));
+    screen.refresh(&s);
+    assert_eq!(
+        screen.built.rows.iter().map(|r| r.id).collect::<Vec<_>>(),
+        vec![1, 41]
+    );
+    screen.key(Key::Char('M'), &mut h.cx(&s, None));
+    screen.refresh(&s);
+    assert_eq!(screen.built.rows.len(), 42);
     // X clears the capture and bookmarks.
     screen.key(Key::Char('X'), &mut h.cx(&s, None));
     assert!(matches!(h.commands.last(), Some(Command::ClearCapture)));
@@ -298,10 +333,18 @@ fn stream_actions_and_capture_commands() {
     assert_eq!(screen.applied, "ja4:t13d1516h2_8daaf615_b186095e");
     screen.key(Key::Char('W'), &mut h.cx(&s, None));
     assert!(matches!(h.commands.last(), Some(Command::Whois(ip)) if ip == "10.88.0.3"));
-    h.focus = 2;
+    assert!(screen.whois_asked.contains("10.88.0.3"));
     screen.key(Key::Char('a'), &mut h.cx(&s, None));
     assert_eq!(screen.direction, Direction::AtoB);
-    screen.key(Key::Char('w'), &mut h.cx(&s, None));
+    // Focus no longer changes what w and ↵ do: w is the list, S the stream.
+    for focus in [0, 2] {
+        h.focus = focus;
+        screen.key(Key::Char('w'), &mut h.cx(&s, None));
+        assert!(
+            matches!(h.commands.last(), Some(Command::ExportPcap { label, .. }) if label == "capture")
+        );
+    }
+    screen.key(Key::Char('S'), &mut h.cx(&s, None));
     match h.commands.last() {
         Some(Command::ExportPcap { ids, label }) => {
             assert_eq!(label, "stream7");
@@ -309,6 +352,11 @@ fn stream_actions_and_capture_commands() {
         }
         other => panic!("{other:?}"),
     }
+    // ↵ filters to the stream first, then opens the connection.
+    screen.key(Key::Enter, &mut h.cx(&s, None));
+    assert_eq!(screen.applied, "stream 7");
+    assert!(h.nav.is_empty());
+    screen.refresh(&s);
     screen.key(Key::Enter, &mut h.cx(&s, None));
     assert!(matches!(
         h.nav.last(),
@@ -388,4 +436,187 @@ fn s_follows_the_stream_conversation() {
     assert!(!screen.conversation);
     frame(&ctx, &mut screen, &mut h, &s);
     assert!(screen.turns.is_none());
+}
+
+#[test]
+fn filter_esc_clears_and_click_away_keeps_the_draft() {
+    let s = fixture();
+    let ctx = ctx();
+    let mut screen = Packets::default();
+    let mut h = Harness::new();
+    screen.refresh(&s);
+    screen.apply_filter("tcp".into());
+    assert!(screen
+        .hints(&h.cx(&s, None))
+        .iter()
+        .any(|h| h.label == "clear filter"));
+    // With a drill, esc is the shell's back.
+    let drill = Filter::Stream(7);
+    assert!(!screen.key(Key::Esc, &mut h.cx(&s, Some(&drill))));
+    assert!(screen.key(Key::Esc, &mut h.cx(&s, None)));
+    assert_eq!(screen.applied, "");
+
+    // Clicking elsewhere keeps the draft for the next `/`.
+    screen.key(Key::Char('/'), &mut h.cx(&s, None));
+    frame(&ctx, &mut screen, &mut h, &s);
+    screen.draft = "udp and port 53".into();
+    ctx.memory_mut(|m| m.surrender_focus(egui::Id::new("packets_display_filter")));
+    frame(&ctx, &mut screen, &mut h, &s);
+    assert!(!screen.editing, "focus left the field");
+    assert_eq!(screen.applied, "");
+    assert_eq!(screen.draft_kept.as_deref(), Some("udp and port 53"));
+    screen.key(Key::Char('/'), &mut h.cx(&s, None));
+    assert_eq!(screen.draft, "udp and port 53");
+    // esc while editing discards it.
+    screen.key(Key::Esc, &mut h.cx(&s, None));
+    assert!(screen.draft_kept.is_none());
+    assert_eq!(screen.draft, "");
+}
+
+#[test]
+fn keys_copy_and_row_menu() {
+    let s = fixture();
+    let mut screen = Packets::default();
+    let mut h = Harness::new();
+    screen.refresh(&s);
+    screen.key(Key::Up, &mut h.cx(&s, None));
+    screen.refresh(&s);
+    let keys = screen.keys(&h.cx(&s, None));
+    for k in [
+        '/', 'c', 'b', 'f', 's', 'h', 'm', ']', 'M', 'n', 'N', 'x', 'X', 'w', 'S', 'j', 'W', 'y',
+        'i',
+    ] {
+        assert!(keys.iter().any(|h| h.key == Key::Char(k)), "{k}");
+    }
+    assert!(keys.iter().any(|h| h.key == Key::Enter));
+    // ctrl-C and y copy the same text.
+    let text = screen.copy_text(&h.cx(&s, None)).expect("packet text");
+    assert!(text.starts_with("Packet #41"), "{text}");
+    assert!(text.contains("JA4: t13d1516h2_8daaf615_b186095e"));
+    assert!(screen.key(Key::Char('y'), &mut h.cx(&s, None)));
+    assert_eq!(screen.pending_copy.as_deref(), Some(text.as_str()));
+    // The right-click menu offers the inspector's actions as keys.
+    let row = screen.built.rows[0].clone();
+    let menu = view::row_menu(&row, &screen.bookmarks, None);
+    let menu_keys: Vec<Key> = menu.iter().map(|h| h.key).collect();
+    for k in [
+        Key::Char('m'),
+        Key::Enter,
+        Key::Char('S'),
+        Key::Char('W'),
+        Key::Char('y'),
+    ] {
+        assert!(menu_keys.contains(&k), "{k:?}");
+    }
+    assert!(menu.iter().any(|h| h.label == "filter to stream 7"));
+    assert_eq!(
+        view::row_menu(&row, &screen.bookmarks, Some(7))[1].label,
+        "open connection"
+    );
+    let actions = screen.keys(&h.cx(&s, None));
+    for hint in &menu {
+        assert!(actions.iter().any(|a| a.key == hint.key), "{:?}", hint.key);
+    }
+}
+
+#[test]
+fn list_columns_give_info_room_first() {
+    let width = |cols: &[crate::ui_kit::Column], w: f32| crate::ui_kit::resolve_widths(cols, w);
+    // Wide: every column, endpoints at their cap.
+    let (cols, ids) = view::list_columns(1100.0, false);
+    assert_eq!(ids, vec![0, 1, 2, 3, 4, 5, 6, 7]);
+    assert!(width(&cols, 1100.0)[7] >= 240.0);
+    // An 820 pt list: endpoints narrow first, len stays, info keeps 240.
+    let (cols, ids) = view::list_columns(820.0, true);
+    assert!(ids.contains(&6), "{ids:?}");
+    let w = width(&cols, 820.0);
+    let info = ids.iter().position(|i| *i == 7).unwrap();
+    assert!(w[info] >= 239.0, "{w:?}");
+    let src = ids.iter().position(|i| *i == 3).unwrap();
+    assert!(w[src] >= 124.0 && w[src] < 170.0, "{w:?}");
+    // Narrower: len hides before time, time only once info is at its floor.
+    let (_, ids) = view::list_columns(680.0, true);
+    assert!(!ids.contains(&6) && ids.contains(&2), "{ids:?}");
+    let (_, ids) = view::list_columns(520.0, true);
+    assert!(!ids.contains(&6) && !ids.contains(&2), "{ids:?}");
+    assert_eq!(view::split_endpoint("10.0.0.2:443"), ("10.0.0.2", ":443"));
+    assert_eq!(view::split_endpoint("[::1]:53"), ("[::1]", ":53"));
+    assert_eq!(view::split_endpoint("fe80::1"), ("fe80::1", ""));
+}
+
+#[test]
+fn bpf_error_is_not_a_permissions_problem() {
+    let mut s = Snapshot::empty();
+    s.capture_state.error = Some("BPF filter error: syntax error".into());
+    s.capture_state.bpf = Some("tcp prt 80".into());
+    let ctx = ctx();
+    let mut screen = Packets::default();
+    let mut h = Harness::new();
+    frame(&ctx, &mut screen, &mut h, &s);
+    assert!(!screen.capture_unavailable(&s));
+    assert_eq!(bpf_error(&s), Some("BPF filter error: syntax error"));
+    s.capture_state.error = Some("libpcap error: permission denied".into());
+    frame(&ctx, &mut screen, &mut h, &s);
+    assert!(screen.capture_unavailable(&s));
+}
+
+#[test]
+fn wheel_scroll_turns_follow_off() {
+    let s = fixture();
+    let ctx = ctx();
+    let mut screen = Packets::default();
+    let mut h = Harness::new();
+    frame(&ctx, &mut screen, &mut h, &s);
+    assert!(screen.follow);
+    let _ = ctx.run(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1252.0, 782.0),
+            )),
+            events: vec![
+                egui::Event::PointerMoved(egui::pos2(600.0, 200.0)),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, 40.0),
+                    modifiers: Default::default(),
+                },
+            ],
+            ..Default::default()
+        },
+        |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                screen.draw(ui, &mut h.cx(&s, None));
+            });
+        },
+    );
+    assert!(!screen.follow);
+}
+
+#[test]
+fn peer_rows_and_ja4_names() {
+    let s = Snapshot::empty();
+    let rows = view::peer_rows(&s, "93.184.216.34", false);
+    assert_eq!(rows[1].1, "– · geo off in settings");
+    assert_eq!(rows[2].1, "– · W looks it up");
+    let rows = view::peer_rows(&s, "10.88.0.3", true);
+    assert_eq!(rows[2].1, "– · private address");
+    assert_eq!(model::ja4_label("nope"), "nope");
+    // A known fingerprint carries its client name wherever it's shown.
+    assert_eq!(
+        model::ja4_label("t12d160700_8cdfa2d4673b_18dd7303c4a5"),
+        "t12d160700_8cdfa2d4673b_18dd7303c4a5 (GoLang)"
+    );
+    let bodies = vec![netwatch::dpi::http3::DecodedBody {
+        encoding: netwatch::dpi::http3::BodyEncoding::Gzip,
+        stream_id: 4,
+        bytes: b"{\"ok\":true}".to_vec(),
+    }];
+    let layer = decode::h3_layer(&bodies).unwrap();
+    assert_eq!(
+        layer.rows[0],
+        ("stream 4".into(), "gzip body · 11 B".into())
+    );
+    assert_eq!(layer.rows[1].1, "{\"ok\":true}");
+    assert!(decode::h3_layer(&[]).is_none());
 }
