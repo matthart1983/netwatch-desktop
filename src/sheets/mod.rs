@@ -297,30 +297,135 @@ impl Sheet for Palette {
 
 // ---------------------------------------------------------------- help
 
-/// `?`: every key — global, then the current tab's.
+/// `?`: every key for what is on screen. Full view: the shell's keys, then
+/// the current tab's full list. Dense and lite: that view's own keys, since
+/// digits, `t` and space mean something else there.
 pub struct Help {
-    pub tab: Tab,
-    pub tab_hints: Vec<Hint>,
+    /// "full view", "dense view", "lite view".
+    pub view: &'static str,
+    pub global: Vec<(String, String)>,
+    /// Heading for `keys`, e.g. "4 packets"; empty for no second section.
+    pub section: String,
+    pub keys: Vec<Hint>,
 }
 
-pub const GLOBAL_KEYS: &[(&str, &str)] = &[
-    ("1–9 0", "switch tabs, from anywhere"),
-    (": ⌘K", "command palette"),
-    ("↵ / esc", "drill into selection / back one level"),
-    ("↑↓", "select within the focused panel"),
-    ("tab", "move focus between panels"),
-    ("p space", "pause / resume the display"),
-    ("R F E", "arm · freeze · export incident bundle"),
-    ("t", "graph scale on graph tabs; cycles theme elsewhere"),
-    ("V L", "cycle view full → lite → dense · lite"),
-    (",", "settings"),
-    ("?", "help"),
-    ("q", "quit"),
-];
+/// The palette chord as this platform spells it.
+pub fn palette_chord() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "⌘K"
+    } else {
+        "ctrl K"
+    }
+}
+
+fn copy_chord() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "⌘C"
+    } else {
+        "ctrl C"
+    }
+}
+
+fn pairs(rows: &[(&str, &str)]) -> Vec<(String, String)> {
+    rows.iter()
+        .map(|(k, l)| (k.to_string(), l.to_string()))
+        .collect()
+}
+
+impl Help {
+    pub fn full(tab: Tab, keys: Vec<Hint>) -> Self {
+        let palette = format!(": {}", palette_chord());
+        let copy = copy_chord();
+        let mut global = pairs(&[
+            ("1–9 0", "switch tabs, from anywhere"),
+            (
+                &palette,
+                "command palette: every command, jump, filter, host",
+            ),
+            ("↵ / esc", "drill into the selection / back one level"),
+            ("↑↓ PgUp PgDn", "select"),
+            ("tab", "move focus between panels"),
+            ("p", "pause / resume the display"),
+            ("d", "diagnose"),
+            ("R F E", "arm · freeze flight recorder · recorder & export"),
+            (copy, "copy the selected row"),
+            (
+                "I",
+                "inspector, when the window is too narrow for its column",
+            ),
+            ("V L", "cycle view full → lite → dense · lite"),
+            ("ctrl + −", "UI zoom"),
+            (",", "settings"),
+            ("?", "help"),
+            ("q", "quit"),
+        ]);
+        global.push((
+            "right-click".into(),
+            "a row's actions, the same as its inspector".into(),
+        ));
+        Self {
+            view: "full view",
+            global,
+            section: format!("{} {}", tab.key(), tab.name()),
+            keys,
+        }
+    }
+
+    pub fn dense() -> Self {
+        let palette = format!(": {}", palette_chord());
+        Self {
+            view: "dense view",
+            global: pairs(&[
+                ("1–4", "zoom a box · again or esc to unzoom"),
+                ("↑↓", "select a socket in box 4"),
+                (
+                    "↵",
+                    "open the selected socket in connections · fold a header",
+                ),
+                ("g", "group sockets: none → host → process"),
+                ("space ← → Z", "fold the group under the cursor · fold all"),
+                ("p f", "pause / resume the display"),
+                ("t", "graph window 30 → 60 → 300 s"),
+                ("d", "diagnose"),
+                ("R F", "arm · freeze flight recorder"),
+                ("e E", "export report · incident bundle"),
+                ("ctrl + −", "dense text size"),
+                ("V / L / esc", "full view · lite view · unzoom, then full"),
+                (&palette, "command palette"),
+                (", ? q", "settings · help · quit"),
+            ]),
+            section: String::new(),
+            keys: Vec::new(),
+        }
+    }
+
+    pub fn lite() -> Self {
+        let palette = format!(": {}", palette_chord());
+        Self {
+            view: "lite view",
+            global: pairs(&[
+                ("↑↓", "select a talker"),
+                ("↵", "details for the selected talker"),
+                ("/", "filter talkers · ↵ keeps it · esc clears"),
+                (
+                    "esc",
+                    "close details → clear selection → clear filter → full view",
+                ),
+                ("d", "diagnose"),
+                ("p", "pause / resume the display"),
+                ("L / V", "full view · dense view"),
+                (&palette, "command palette"),
+                (", ? q", "settings · help · quit"),
+            ]),
+            section: String::new(),
+            keys: Vec::new(),
+        }
+    }
+}
 
 impl Sheet for Help {
     fn width(&self) -> f32 {
-        620.0
+        640.0
     }
     fn draw(&mut self, ui: &mut Ui, _cx: &mut Cx) -> bool {
         let mut keep = true;
@@ -328,15 +433,16 @@ impl Sheet for Help {
         ui.horizontal(|ui| {
             ui.add_space(12.0);
             ui.label(ui_kit::strong("help", theme::DATA, theme::accent()));
-            ui.label(ui_kit::meta(
-                "every key · clicking a hint does the same thing",
-            ));
+            ui.label(ui_kit::meta(format!(
+                "{} · every key · clicking a hint does the same thing",
+                self.view
+            )));
         });
         ui_kit::rule(ui);
         let key_col = |ui: &mut Ui, key: &str, label: &str, color: Color32| {
             ui.horizontal(|ui| {
                 ui.add_space(12.0);
-                let (rect, _) = ui.allocate_exact_size(vec2(90.0, 18.0), Sense::hover());
+                let (rect, _) = ui.allocate_exact_size(vec2(110.0, 18.0), Sense::hover());
                 ui_kit::paint_text(
                     ui,
                     rect,
@@ -345,23 +451,40 @@ impl Sheet for Help {
                     color,
                     Align::Min,
                 );
-                ui.label(ui_kit::mono(label, theme::LABEL, theme::text2()));
+                ui.add(egui::Label::new(ui_kit::mono(label, theme::LABEL, theme::text2())).wrap());
             });
         };
-        ui.horizontal(|ui| {
-            ui.add_space(12.0);
-            ui_kit::section(ui, "global");
-        });
-        for (key, label) in GLOBAL_KEYS {
-            key_col(ui, key, label, theme::key_hint());
-        }
-        ui.horizontal(|ui| {
-            ui.add_space(12.0);
-            ui_kit::section(ui, &format!("{} {}", self.tab.key(), self.tab.name()));
-        });
-        for hint in &self.tab_hints {
-            key_col(ui, &hint.key_text(), &hint.label, theme::key_hint());
-        }
+        // Leave room for the sheet footer; the list scrolls when it doesn't fit.
+        let body = (ui.available_height() - 44.0).max(80.0);
+        egui::ScrollArea::vertical()
+            .id_source("help_keys")
+            .max_height(body)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_space(12.0);
+                    ui_kit::section(
+                        ui,
+                        if self.section.is_empty() {
+                            self.view
+                        } else {
+                            "global"
+                        },
+                    );
+                });
+                for (key, label) in &self.global {
+                    key_col(ui, key, label, theme::key_hint());
+                }
+                if !self.section.is_empty() {
+                    ui.horizontal(|ui| {
+                        ui.add_space(12.0);
+                        ui_kit::section(ui, &self.section);
+                    });
+                    for hint in &self.keys {
+                        key_col(ui, &hint.key_text(), &hint.label, theme::key_hint());
+                    }
+                }
+            });
         if sheet_footer(ui, &[Hint::new(Key::Esc, "close")], "").is_some() {
             keep = false;
         }

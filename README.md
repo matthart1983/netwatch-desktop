@@ -76,7 +76,8 @@ Useful flags:
 |---|---|
 | `--demo` | Runs the real runtime with the diagnose demo scenario and a seeded packet capture. Good for seeing every screen populated. |
 | `--tab <name>` | Opens on a tab: `dashboard`, `connections`, `interfaces`, `packets`, `stats`, `topology`, `timeline`, `processes`, `diagnose`, `egress`. |
-| `--view full\|lite\|dense` | Starts in a view. |
+| `--view full\|lite\|dense` | Starts in a view. `--lite` is short for `--view lite`. |
+| `--no-sandbox` / `--sandbox-strict` | Overrides config.toml's `sandbox` for this launch, as in the TUI. |
 | `--zoom 1-4` | In dense view, opens with one box zoomed. |
 | `--sheet <name>` | Opens a sheet: `settings`, `recorder`, `firstrun`, `palette`, `help`. |
 | `--theme <name>` | Starts with a palette (see [themes](#themes-and-graphs)). |
@@ -85,6 +86,9 @@ Useful flags:
 | `--graph-preview` | Runs on a synthetic snapshot with no collectors. Used for graph and layout checks. |
 | `--check-runtime` | Starts the runtime headless, prints interface, capture, diagnose coverage, socket and PID counts and the capability report, then exits. |
 | `--screenshot <path>` | Saves a PNG of the window after about three seconds and exits. Runs with this flag neither read nor write saved layout. |
+| `--help` / `--version` | Usage or version. Unknown flags and bad values are rejected. |
+
+If the runtime fails to start (for example `sandbox = "strict"` where the platform can't enforce it), the window says why and offers `r` to retry with the sandbox off for that launch, or `S` to set `sandbox = "on"` and retry.
 
 `--check-runtime` is the quickest way to find out what the app can see on a machine:
 
@@ -124,7 +128,7 @@ Every tab shares one frame:
 - The timeline dock sits under the dashboard, connections and diagnose.
 - The footer lists the keys the current tab responds to. Every hint is clickable and does the same thing as the key. Results of writes (exports, policy changes, config saves) show at the right with their path.
 
-Below 1180 pixels wide the navigator shrinks to a rail of digits. Below 1000 the inspector opens as a sheet on `↵`.
+Below 1180 points wide the navigator shrinks to a rail of digits; below 1000 the inspector moves into a sheet opened with `I`. Points are window pixels divided by the interface zoom, so at the default zoom of 1.15 that's about 1357 and 1150 pixels; `ctrl -` brings the navigator back on a smaller screen. The menu and palette can also collapse the navigator and hide the timeline dock, and the dock gives up height in short windows.
 
 ## Keys
 
@@ -137,15 +141,19 @@ Global keys work on every tab unless a sheet is open.
 | `↵` / `esc` | drill into the selection / back one breadcrumb level |
 | `↑` `↓` | move the selection |
 | `tab` | move focus between panels |
-| `p` or `space` | pause or resume the display (collectors and recording keep running) |
+| `p` | pause or resume the display (collectors and recording keep running). `space` is for panel actions such as folding |
+| `d` | diagnose |
+| `ctrl-c` | copy the selected row |
+| `I` | inspector sheet, when the window is too narrow for the column |
+| right-click | a row's actions, the same as its inspector |
 | `R` | arm or disarm the flight recorder |
 | `F` | freeze the recorder |
 | `E` | open the recorder and export sheet |
 | `V` | cycle full, lite, dense |
 | `L` | lite view |
-| `t` | graph scale on graph tabs, cycles theme elsewhere |
+| `t` | graph scale or window on graph tabs |
 | `,` | settings |
-| `?` | every key for the current tab |
+| `?` | every key for the current tab, or for dense and lite in those views |
 | `q` | quit |
 | `ctrl +` / `ctrl -` / `ctrl 0` | zoom the interface (in dense view, the text size) |
 
@@ -153,7 +161,7 @@ Global keys work on every tab unless a sheet is open.
 
 Each tab lists its own keys in the footer and in `?`.
 
-**1 dashboard.** Five stat cards (gateway, dns and internet rtt, probe loss, retransmits) with sparklines and baselines, the throughput graph, health rows with the engine's findings, the top connections by concern, and the timeline dock. `↵` opens the selected socket in connections, `d` diagnose, `r` recorder, `f` freeze, `e` export the diagnose report, `t` linear or log scale.
+**1 dashboard.** Five stat cards (gateway, dns and internet rtt, probe loss, retransmits) with sparklines and baselines, the throughput graph, health rows with the engine's findings, the top connections by concern, and the timeline dock. `↵` opens the selected socket in connections, `e` exports the diagnose report, `t` switches linear or log scale.
 
 **2 connections.** Every socket with process and PID, remote host (resolved when known), application protocol, state, rates, kernel rtt, retransmits, age, verdict and a 60 second rtt history. Control strip for show (concern, all, established, listen, time-wait) and group (none, host, process). Listeners and system daemons with no egress fold into one line (`z`). With grouping on, `space` folds the group under the cursor, `←` `→` fold and unfold, `Z` folds all, and `↑` `↓` also stop on group headers. `/` filters, `s` sorts, `g` groups, `↵` opens packets for the socket, `p` its process, `W` whois, `T` traceroute, `e` exports JSON and CSV.
 
@@ -185,11 +193,11 @@ All three views run on the same backend. Switching views never restarts collecto
 
 ![Dense view](docs/screenshots/dense.png)
 
-**Dense** packs four boxes: mirrored throughput with session totals, interfaces, health with rtt budget meters, and connections with the selected socket's kernel state above the table. `1`-`4` zoom a box. In the connections box `g` cycles grouping, `space` and `Z` fold groups. Text size is separate from the interface zoom (`ctrl +` / `ctrl -`, or the menu). See [docs/DENSE.md](docs/DENSE.md).
+**Dense** packs four boxes: mirrored throughput with session totals, interfaces, health with rtt budget meters, and connections with the selected socket's kernel state above the table. `1`-`4` zoom a box. Dense runs at interface zoom 1.0 and sizes its own text. In the connections box `g` cycles grouping, `space` and `Z` fold groups. Text size is separate from the interface zoom (`ctrl +` / `ctrl -`, or the menu). See [docs/DENSE.md](docs/DENSE.md).
 
 <img src="docs/screenshots/lite.png" alt="Lite view" width="540">
 
-**Lite** is a small window (minimum 720 by 420) with throughput, reachability and top talkers. It remembers its size and can stay on top.
+**Lite** is a small window (minimum 720 by 420) with throughput, reachability and top talkers. It remembers its size and can stay on top ("lite window on top" in the menu or palette).
 
 ## Sheets
 
@@ -205,7 +213,7 @@ Sheets open over the current screen, which keeps updating underneath. `esc` clos
 
 ## Themes and graphs
 
-Themes: `dark` and `paper` from the design spec, plus the six netwatch TUI themes `terminal`, `ocean`, `solarized`, `dracula`, `nord` and `sky`, mapped slot for slot. Pick one from the menu, the palette, settings, or `t` on a tab without a graph.
+Themes: `dark` and `paper` from the design spec, plus the six netwatch TUI themes `terminal`, `ocean`, `solarized`, `dracula`, `nord` and `sky`, mapped slot for slot. Pick one from the menu or the palette ("cycle theme"). The settings sheet's theme, view and default-tab rows configure the terminal app.
 
 Charts have two looks. The default is btop-style dot cells lit from the baseline. The other is solid bars. Either can use a magnitude fade that runs from dim at the baseline to the full series colour at the top. The switch applies to every chart in the app: throughput plots, sparklines, timeline tracks, histograms and share bars. Toggle it from the menu at the top right, the palette (`graphs: switch to bars`), or settings. It is saved as `graph_style` (`dots` or `bars`) and `graph_fade` in the netwatch config, so the TUI follows the same setting.
 

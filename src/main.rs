@@ -24,13 +24,111 @@ fn arg(args: &[String], name: &str) -> Option<String> {
         .find_map(|w| (w[0] == name).then(|| w[1].clone()))
 }
 
+const USAGE: &str = "netwatch-desktop — desktop workbench for netwatch
+
+usage: netwatch-desktop [options]
+
+  --demo                 replayed diagnose scenario and seeded packets
+  --tab <name>           start on a tab (dashboard, connections, interfaces,
+                         packets, stats, topology, timeline, processes,
+                         diagnose, egress)
+  --view full|lite|dense start in a view (--lite is short for --view lite)
+  --theme <name>         colour theme for this launch
+  --no-sandbox           disable the sandbox for this launch
+  --sandbox-strict       require sandbox enforcement for this launch
+  --window-size WxH      initial window size
+  --app-chrome           draw the app's own title bar instead of the system's
+  --check-runtime        start the runtime, print what it sees, exit
+  --screenshot <png>     render once, save a PNG, exit (no prefs read or written)
+  --sheet <name>         open a sheet: settings, recorder, firstrun, palette, help
+  --zoom 1-4             dense view: zoom a box
+  --graph-preview        synthetic snapshot, no collectors
+  --ephemeral            don't read or write saved layout
+  -h, --help             this help
+  -V, --version          version
+";
+
+/// Flags that take a value, and flags that don't.
+const VALUE_FLAGS: &[&str] = &[
+    "--tab",
+    "--view",
+    "--theme",
+    "--window-size",
+    "--screenshot",
+    "--sheet",
+    "--zoom",
+];
+const BARE_FLAGS: &[&str] = &[
+    "--demo",
+    "--lite",
+    "--no-sandbox",
+    "--sandbox-strict",
+    "--app-chrome",
+    "--check-runtime",
+    "--graph-preview",
+    "--ephemeral",
+    "-h",
+    "--help",
+    "-V",
+    "--version",
+];
+
+/// Unknown flags, a value flag with no value, or a bad value, as a message.
+fn validate(args: &[String]) -> Result<(), String> {
+    let mut i = 1;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if VALUE_FLAGS.contains(&a) {
+            let Some(value) = args.get(i + 1) else {
+                return Err(format!("{a} needs a value"));
+            };
+            let ok = match a {
+                "--tab" => Tab::from_name(value).is_some(),
+                "--view" => ["full", "lite", "dense"].contains(&value.as_str()),
+                _ => true,
+            };
+            if !ok {
+                return Err(format!("{a}: unknown value \"{value}\""));
+            }
+            i += 2;
+        } else if BARE_FLAGS.contains(&a) {
+            i += 1;
+        } else {
+            return Err(format!("unknown option {a}"));
+        }
+    }
+    if args.iter().any(|a| a == "--no-sandbox") && args.iter().any(|a| a == "--sandbox-strict") {
+        return Err("--no-sandbox and --sandbox-strict conflict".into());
+    }
+    Ok(())
+}
+
 fn main() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let flag = |name: &str| args.iter().any(|a| a == name);
+    if flag("-h") || flag("--help") {
+        print!("{USAGE}");
+        return Ok(());
+    }
+    if flag("-V") || flag("--version") {
+        println!("netwatch-desktop {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if let Err(e) = validate(&args) {
+        eprintln!("netwatch-desktop: {e}\n\n{USAGE}");
+        std::process::exit(2);
+    }
+    let sandbox = if flag("--no-sandbox") {
+        Some(netwatch::sandbox::Mode::Disabled)
+    } else if flag("--sandbox-strict") {
+        Some(netwatch::sandbox::Mode::Strict)
+    } else {
+        None
+    };
     let backend = if flag("--graph-preview") {
         Backend::preview()
     } else {
-        Backend::spawn_session(flag("--demo"))
+        Backend::spawn_session(flag("--demo"), sandbox)
     };
     if flag("--check-runtime") {
         let started = std::time::Instant::now();
@@ -78,7 +176,9 @@ fn main() -> eframe::Result<()> {
     let initial_tab = arg(&args, "--tab")
         .and_then(|t| Tab::from_name(&t))
         .unwrap_or(prefs.tab);
-    let view = arg(&args, "--view").map(|v| app::View::from_name(&v));
+    let view = arg(&args, "--view")
+        .map(|v| app::View::from_name(&v))
+        .or(flag("--lite").then_some(app::View::Lite));
     let dense = view == Some(app::View::Dense) || (view.is_none() && prefs.view == "dense");
     let lite = view == Some(app::View::Lite) || (view.is_none() && prefs.view == "lite");
     let zoom = arg(&args, "--zoom").and_then(|z| {
@@ -112,6 +212,7 @@ fn main() -> eframe::Result<()> {
             [1440.0, 900.0]
         });
     let screenshot = flag("--screenshot");
+    let demo = flag("--demo");
     let app_chrome = flag("--app-chrome");
     let sheet = arg(&args, "--sheet");
     let theme_name = arg(&args, "--theme");
@@ -148,6 +249,7 @@ fn main() -> eframe::Result<()> {
                     }),
                     ephemeral,
                     system_decorations: !app_chrome,
+                    demo,
                 },
                 prefs,
             );
@@ -161,4 +263,25 @@ fn main() -> eframe::Result<()> {
             Ok(Box::new(app))
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate;
+    fn args(line: &str) -> Vec<String> {
+        std::iter::once("netwatch-desktop")
+            .chain(line.split_whitespace())
+            .map(String::from)
+            .collect()
+    }
+    #[test]
+    fn flags_are_checked() {
+        assert!(validate(&args("--demo --tab packets --view dense --no-sandbox")).is_ok());
+        assert!(validate(&args("--lite --window-size 800x500")).is_ok());
+        assert!(validate(&args("--typo")).is_err());
+        assert!(validate(&args("--tab nope")).is_err());
+        assert!(validate(&args("--view wide")).is_err());
+        assert!(validate(&args("--tab")).is_err());
+        assert!(validate(&args("--no-sandbox --sandbox-strict")).is_err());
+    }
 }

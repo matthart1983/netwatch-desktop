@@ -217,6 +217,17 @@ pub enum Nav {
     ToggleBtop,
     /// Flip the magnitude fade on every graph, saved to config.
     ToggleFade,
+    /// Run a shell command key directly, skipping the tab's own keys (the
+    /// palette's global commands: `p` must pause even where a tab binds `p`).
+    Global(Key),
+    CycleTheme,
+    /// Show or hide the timeline dock under dashboard, connections, diagnose.
+    ToggleDock,
+    /// Collapse the navigator to the icon rail, or expand it.
+    ToggleNavigator,
+    /// Keep the lite window above other windows.
+    ToggleLiteOnTop,
+    OpenFirstRun,
 }
 
 #[derive(Clone, Debug, PartialEq)]

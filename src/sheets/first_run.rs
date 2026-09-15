@@ -868,6 +868,29 @@ pub fn lost_grant(seen: &str, now: &str) -> bool {
         })
 }
 
+/// The fingerprint to remember: `now`, except a capability that is only
+/// "not checked" or "unknown" right now keeps the state `seen` recorded, so
+/// a launch-time race can't erase the "ready" that `lost_grant` compares to.
+pub fn merge_fingerprint(seen: &str, now: &str) -> String {
+    let previous = |id: &str| {
+        seen.split(';')
+            .filter_map(|kv| kv.split_once('='))
+            .find(|(k, _)| *k == id)
+            .map(|(_, v)| v.to_string())
+    };
+    now.split(';')
+        .filter_map(|kv| kv.split_once('='))
+        .map(|(id, state)| {
+            let state = match state {
+                "not checked" | "unknown" => previous(id).unwrap_or_else(|| state.to_string()),
+                _ => state.to_string(),
+            };
+            format!("{id}={state}")
+        })
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1036,5 +1059,17 @@ mod tests {
         sheet.key(Key::Left, &mut cx);
         assert_eq!(sheet.platform, start);
         assert_eq!(sheet.key(Key::Enter, &mut cx), SheetKey::Close);
+    }
+
+    #[test]
+    fn merged_fingerprint_keeps_ready_through_startup() {
+        let seen = "capture=ready;attribution=ready;tcp_metrics=ready;sandbox=ready";
+        let starting = "capture=not checked;attribution=ready;tcp_metrics=unknown;sandbox=ready";
+        let merged = merge_fingerprint(seen, starting);
+        assert_eq!(merged, seen);
+        // Later the grant is really gone: detected against the merged value.
+        let lost = "capture=unavailable;attribution=ready;tcp_metrics=ready;sandbox=ready";
+        assert!(lost_grant(&merged, lost));
+        assert_eq!(merge_fingerprint("", starting), starting);
     }
 }

@@ -16,7 +16,7 @@ Unknown metrics are distinct from measured zero. Kernel RTT/retransmissions are 
 - Permissions must name the running desktop executable, not `which netwatch`. Generate any grant instructions from actual platform/build capabilities and the resolved executable path; this build disables eBPF. Do not copy the mock's broad capability command.
 - Privacy copy: collection and analysis are local. Active health checks send DNS, reachability and STUN probes. Optional online lookups/AI follow the existing Netwatch configuration. Do not claim that no traffic leaves the host.
 - Muted dark text is `#8996a8`, replacing `#6c788a`, to meet the specified 4.5:1 contrast on panel and raised backgrounds.
-- Full view currently enforces 1180×720. A future rail/inspector-sheet mode must define explicit breakpoints before lowering that minimum.
+- Full view's minimum window is 900×600. Breakpoints are in layout points (window pixels ÷ UI zoom): below 1180 the navigator is a rail, below 1000 the inspector is a sheet (`I`). Measuring in points keeps the three columns readable at any zoom.
 
 The user’s subsequent graph direction supersedes the draft’s “no animations” instruction: smooth, time-based graph motion is on by default, with a Smooth motion control to disable it.
 
@@ -37,4 +37,4 @@ Where the crate cannot supply what a mock shows, the slot stays and the reason i
 - Right-click opens no action menu yet; the inspector's actions list serves instead. Column drag-reorder and per-column width persistence are not implemented.
 - App-drawn window chrome is opt-in (`--app-chrome`) until edge resizing is verified across compositors.
 
-Dense view is implemented against mock 2o. See [DENSE.md](DENSE.md) for controls, data semantics and verification. In dense, `p`/space pause (`f` remains an alias).
+Dense view is implemented against mock 2o. See [DENSE.md](DENSE.md) for controls, data semantics and verification. In dense, `p` pauses (`f` remains an alias); space folds.

@@ -4,7 +4,7 @@
 //! saved, and `S` saves explicitly. Below the rows, the runtime capability
 //! report says what actually applied.
 use crate::backend::{Command, Snapshot};
-use crate::shell::{Cx, Hint, Key, Nav, Sheet, SheetKey, Toast};
+use crate::shell::{Cx, Hint, Key, Sheet, SheetKey, Toast};
 use crate::{theme, ui_kit};
 use egui::{pos2, vec2, Align, Color32, FontId, Rect, Sense, Stroke, Ui};
 use netwatch::config::NetwatchConfig;
@@ -21,18 +21,9 @@ pub const GROUPS: [&str; 6] = [
 
 const TIMELINE_WINDOWS: &[&str] = &["1m", "5m", "15m", "30m", "1h"];
 const SANDBOX_MODES: &[&str] = &["on", "strict", "off"];
-const TAB_NAMES: &[&str] = &[
-    "dashboard",
-    "connections",
-    "interfaces",
-    "packets",
-    "stats",
-    "topology",
-    "timeline",
-    "processes",
-    "diagnose",
-    "egress",
-];
+/// The terminal app's launch tabs: the only values its config accepts
+/// (`insights` is its name for diagnose).
+const TAB_NAMES: &[&str] = netwatch::ui::settings::TAB_NAMES;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Kind {
@@ -339,9 +330,11 @@ fn display(cfg: &NetwatchConfig, row: &Row, s: &Snapshot) -> (String, bool) {
 fn hint_note(cfg: &NetwatchConfig, row: &Row) -> (String, &'static str) {
     let list = |values: &[&str]| values.join(" · ");
     match row.key {
-        "theme" => (list(netwatch::theme::THEME_NAMES), ""),
-        "view" => (list(netwatch::app::VIEW_MODE_NAMES), ""),
-        "default_tab" => ("tab shown on launch".into(), ""),
+        // These three configure the terminal app. The desktop keeps its own
+        // theme, view and tab (☰ menu, V, digits) and remembers them itself.
+        "theme" => (list(netwatch::theme::THEME_NAMES), "terminal app"),
+        "view" => (list(netwatch::app::VIEW_MODE_NAMES), "terminal app"),
+        "default_tab" => ("tab the terminal app opens on".into(), "terminal app"),
         "graph_style" => ("dots (braille) · bars".into(), ""),
         "graph_fade" => ("magnitude gradient up the plot".into(), ""),
         "groups_start_collapsed" => ("folded groups open closed".into(), ""),
@@ -458,10 +451,6 @@ impl Settings {
         let Some(cfg) = self.edited.clone() else {
             return;
         };
-        let theme_changed = self.original.as_ref().is_some_and(|o| o.theme != cfg.theme);
-        if theme_changed {
-            cx.go(Nav::SetTheme(cfg.theme.clone()));
-        }
         cx.run(Command::SaveConfig(Box::new(cfg.clone())));
         self.original = Some(cfg);
         self.error = None;
@@ -1080,7 +1069,7 @@ impl Sheet for Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::Shared;
+    use crate::shell::{Nav, Shared};
 
     struct Harness {
         commands: Vec<Command>,
@@ -1258,7 +1247,9 @@ mod tests {
         assert!(
             matches!(h.commands.last(), Some(Command::SaveConfig(c)) if c.refresh_rate_ms == 1500)
         );
-        assert!(matches!(h.nav.last(), Some(Nav::SetTheme(_))));
+        // Theme, view and default tab are the terminal app's; saving doesn't
+        // re-theme the desktop.
+        assert!(h.nav.is_empty());
         assert!(sheet.changed().is_empty());
         // A later change discarded by esc closes with a toast.
         sheet.key(Key::Up, &mut h.cx(&s));

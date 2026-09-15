@@ -612,7 +612,9 @@ pub struct Backend {
 impl Backend {
     /// `demo` runs the real runtime with the Diagnose demo scenario and a
     /// seeded packet capture — the same `--demo` the TUI offers.
-    pub fn spawn_session(demo: bool) -> Arc<Self> {
+    /// `sandbox` overrides config.toml's `sandbox` for this session
+    /// (`--no-sandbox`, `--sandbox-strict`, or a retry after a failed start).
+    pub fn spawn_session(demo: bool, sandbox: Option<netwatch::sandbox::Mode>) -> Arc<Self> {
         let snapshot = Arc::new(RwLock::new(None));
         let error = Arc::new(RwLock::new(None));
         let (stop, stopped) = mpsc::channel();
@@ -621,7 +623,8 @@ impl Backend {
         let failed = Arc::clone(&error);
         let thread = std::thread::spawn(move || {
             let config = NetwatchConfig::load();
-            let mode = netwatch::sandbox::Mode::from_config(&config.sandbox);
+            let mode =
+                sandbox.unwrap_or_else(|| netwatch::sandbox::Mode::from_config(&config.sandbox));
             let interval = Duration::from_millis(config.refresh_rate_ms.clamp(100, 5000));
             let mut app = App::prepare_with_config(config);
             // Sandbox applies to this runtime thread and its workers, leaving

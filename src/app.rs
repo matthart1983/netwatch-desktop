@@ -61,6 +61,8 @@ pub struct Options {
     /// Screenshot and test runs: no first-run sheet, no prefs writes.
     pub ephemeral: bool,
     pub system_decorations: bool,
+    /// How the session was started, so a failed start can be retried.
+    pub demo: bool,
 }
 
 impl Default for Options {
@@ -68,14 +70,23 @@ impl Default for Options {
         Self {
             tab: Tab::Dashboard,
             view: None,
+            demo: false,
             ephemeral: true,
             system_decorations: true,
         }
     }
 }
 
+/// Layout breakpoints in points, i.e. window pixels ÷ UI zoom (ctrl ±).
+/// Below `RAIL_WIDTH` the navigator becomes the icon rail; below
+/// `COMPACT_WIDTH` the inspector moves into a sheet (`I`). At the default
+/// zoom of 1.15 that is about 1357 and 1150 window pixels.
+pub const RAIL_WIDTH: f32 = 1180.0;
+pub const COMPACT_WIDTH: f32 = 1000.0;
+
 pub struct DesktopApp {
     backend: Arc<Backend>,
+    demo: bool,
     screens: Vec<Box<dyn Screen>>,
     stack: Vec<Level>,
     pub shared: Shared,
@@ -85,6 +96,9 @@ pub struct DesktopApp {
     /// Tab presses taken out of egui's input before its focus pass (see
     /// `raw_input_hook`), delivered as shell keys instead.
     tab_presses: usize,
+    started: Instant,
+    /// Dense ran at zoom 1.0 last frame; restore the saved zoom on leaving.
+    dense_zoomed_out: bool,
     view: View,
     pub dense: crate::dense::Dense,
     lite: crate::lite::Lite,
@@ -160,6 +174,7 @@ impl DesktopApp {
         theme::set(theme::by_name(&prefs.theme));
         Self {
             backend,
+            demo: options.demo,
             screens,
             stack: vec![Level {
                 tab: options.tab,
@@ -171,6 +186,8 @@ impl DesktopApp {
             frozen: None,
             toggle_freeze: false,
             tab_presses: 0,
+            started: Instant::now(),
+            dense_zoomed_out: false,
             view: options.view.unwrap_or_else(|| View::from_name(&prefs.view)),
             dense,
             lite: Default::default(),
@@ -218,7 +235,7 @@ impl DesktopApp {
         if view == self.view {
             return;
         }
-        let size = ctx.screen_rect().size();
+        let size = window_size(ctx);
         if self.view == View::Full {
             self.full_window = Some(size);
         }
@@ -311,14 +328,17 @@ impl DesktopApp {
 
     /// Keyboard input for this frame as shell keys. Text events carry
     /// characters (case and punctuation preserved); key events carry the
-    /// rest. Returns (keys, palette requested via ⌘K / ctrl-K).
-    fn collect_keys(ctx: &egui::Context, tab_presses: usize) -> (Vec<Key>, bool) {
+    /// rest. Returns (keys, palette requested via ⌘K / ctrl-K, copy
+    /// requested via ⌘C / ctrl-C outside a text field).
+    fn collect_keys(ctx: &egui::Context, tab_presses: usize) -> (Vec<Key>, bool, bool) {
         let typing = ctx.wants_keyboard_input();
         ctx.input(|i| {
             let mut keys = vec![Key::Tab; tab_presses];
             let mut palette = false;
+            let mut copy = false;
             for event in &i.events {
                 match event {
+                    egui::Event::Copy if !typing => copy = true,
                     egui::Event::Text(text) if !typing => {
                         keys.extend(text.chars().filter(|c| *c != ' ').map(Key::Char));
                     }
@@ -354,7 +374,7 @@ impl DesktopApp {
                     _ => {}
                 }
             }
-            (keys, palette)
+            (keys, palette, copy)
         })
     }
 
@@ -364,7 +384,13 @@ impl DesktopApp {
         let mut commands = Vec::new();
         let mut nav = Vec::new();
         let filter = self.filter();
-        let compact = ctx.screen_rect().width() < 1000.0;
+        let compact = ctx.screen_rect().width() < COMPACT_WIDTH;
+
+        if s.is_none() {
+            self.sheet = None;
+            self.startup_key(key);
+            return;
+        }
 
         if self.sheet.is_some() {
             let mut sheet = self.sheet.take();
@@ -418,7 +444,7 @@ impl DesktopApp {
                 match key {
                     Key::Esc | Key::Char('L') => self.set_view(ctx, View::Full),
                     Key::Char('V') => self.set_view(ctx, View::Dense),
-                    Key::Char('p') | Key::Space => self.toggle_freeze = true,
+                    Key::Char('p') => self.toggle_freeze = true,
                     Key::Char('?') => self.open_help(s),
                     Key::Char(':') => self.open_sheet("palette", s),
                     Key::Char(',') => self.open_sheet("settings", s),
@@ -443,10 +469,6 @@ impl DesktopApp {
         }
 
         let index = Self::screen_index(self.tab());
-        if compact && key == Key::Enter && self.screens[index].inspector_width().is_some() {
-            self.sheet = Some(ActiveSheet::Inspector);
-            return;
-        }
         let consumed = match s {
             Some(s) => {
                 let mut cx = cx!(self, s, &mut commands, &mut nav, filter.as_ref(), compact);
@@ -463,7 +485,9 @@ impl DesktopApp {
     fn global_key(&mut self, ctx: &egui::Context, key: Key, s: Option<&Snapshot>) {
         match key {
             Key::Esc => self.apply_nav(ctx, Nav::Back, s),
-            Key::Char('p') | Key::Space => self.toggle_freeze = true,
+            // p pauses on every tab; space is left to panel actions (fold).
+            Key::Char('p') => self.toggle_freeze = true,
+            Key::Char('d') => self.apply_nav(ctx, Nav::Tab(Tab::Diagnose), s),
             Key::Char('R') => self.send(Command::ToggleRecorder),
             Key::Char('F') => self.send(Command::FreezeRecorder),
             Key::Char('E') => self.open_sheet("recorder", s),
@@ -472,28 +496,137 @@ impl DesktopApp {
             Key::Char(',') => self.open_sheet("settings", s),
             Key::Char('?') => self.open_help(s),
             Key::Char('q') => self.quit = true,
-            Key::Char('t') => self.cycle_theme(),
+            // Compact windows have no inspector column: I opens it as a sheet.
+            Key::Char('I')
+                if ctx.screen_rect().width() < COMPACT_WIDTH
+                    && self.screens[Self::screen_index(self.tab())]
+                        .inspector_width()
+                        .is_some() =>
+            {
+                self.sheet = Some(ActiveSheet::Inspector)
+            }
             Key::Tab => self.focus += 1,
             _ => {}
         }
     }
 
+    /// Before the first snapshot: "starting…", or why the runtime failed to
+    /// start and two ways out that don't need a text editor.
+    fn startup_screen(&mut self, ui: &mut Ui) {
+        let Some(error) = self.backend.error() else {
+            ui.label(ui_kit::label("starting netwatch collectors…"));
+            return;
+        };
+        let config = netwatch::config::NetwatchConfig::load();
+        ui.label(ui_kit::strong(
+            "netwatch could not start its runtime",
+            theme::DATA,
+            theme::error(),
+        ));
+        ui.add_space(6.0);
+        ui.add(egui::Label::new(ui_kit::mono(error, theme::DATA, theme::text())).wrap());
+        ui.add_space(10.0);
+        let path = netwatch::config::NetwatchConfig::path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "config.toml".into());
+        ui.label(ui_kit::label(format!(
+            "config {path} · sandbox = \"{}\"",
+            config.sandbox
+        )));
+        ui.label(ui_kit::meta(
+            "strict sandboxing fails where the platform can't enforce it · the terminal app takes --no-sandbox for the same reason",
+        ));
+        ui.add_space(10.0);
+        let mut key = None;
+        for hint in self.startup_hints() {
+            if ui_kit::key_hint(ui, &hint) {
+                key = Some(hint.key);
+            }
+        }
+        if let Some(key) = key {
+            self.clicked.push(key);
+        }
+    }
+
+    fn startup_hints(&self) -> Vec<Hint> {
+        if self.backend.error().is_none() {
+            return vec![Hint::ch('q', "quit")];
+        }
+        vec![
+            Hint::ch('r', "retry with the sandbox off, this launch only"),
+            Hint::ch('S', "set sandbox = \"on\" in config.toml and retry"),
+            Hint::ch('q', "quit"),
+        ]
+    }
+
+    /// Keys while there is no snapshot: sheets need data, so only the
+    /// startup screen's actions and quit work.
+    fn startup_key(&mut self, key: Key) {
+        use netwatch::sandbox::Mode;
+        let failed = self.backend.error().is_some();
+        match key {
+            Key::Char('q') => self.quit = true,
+            Key::Char('r') if failed => {
+                self.backend = Backend::spawn_session(self.demo, Some(Mode::Disabled));
+            }
+            Key::Char('S') if failed => {
+                let mut config = netwatch::config::NetwatchConfig::load();
+                config.sandbox = "on".into();
+                match config.save() {
+                    Ok(()) => {
+                        self.backend = Backend::spawn_session(self.demo, None);
+                        self.toast = Some(Toast::ok("✓ sandbox = \"on\" saved"));
+                    }
+                    Err(e) => self.toast = Some(Toast::err(format!("✕ save failed · {e}"))),
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// ctrl-C / ⌘C: the current tab's selected row as text.
+    fn copy_selection(&mut self, ctx: &egui::Context, s: Option<&Snapshot>) {
+        let Some(s) = s else { return };
+        let mut commands = Vec::new();
+        let mut nav = Vec::new();
+        let filter = self.filter();
+        let index = Self::screen_index(self.tab());
+        let text = {
+            let cx = cx!(self, s, &mut commands, &mut nav, filter.as_ref(), false);
+            self.screens[index].copy_text(&cx)
+        };
+        self.toast = Some(match text {
+            Some(text) => {
+                let lines = text.lines().count().max(1);
+                ctx.output_mut(|o| o.copied_text = text);
+                Toast::ok(format!(
+                    "✓ copied {lines} line{}",
+                    if lines == 1 { "" } else { "s" }
+                ))
+            }
+            None => Toast::err("nothing selected to copy"),
+        });
+    }
+
     fn open_help(&mut self, s: Option<&Snapshot>) {
         let tab = self.tab();
-        let hints = match s {
-            Some(s) => {
-                let mut commands = Vec::new();
-                let mut nav = Vec::new();
-                let filter = self.filter();
-                let index = Self::screen_index(tab);
-                let cx = cx!(self, s, &mut commands, &mut nav, filter.as_ref(), false);
-                self.screens[index].hints(&cx)
+        self.sheet = Some(ActiveSheet::Help(match self.view {
+            View::Dense => Help::dense(),
+            View::Lite => Help::lite(),
+            View::Full => {
+                let keys = match s {
+                    Some(s) => {
+                        let mut commands = Vec::new();
+                        let mut nav = Vec::new();
+                        let filter = self.filter();
+                        let index = Self::screen_index(tab);
+                        let cx = cx!(self, s, &mut commands, &mut nav, filter.as_ref(), false);
+                        self.screens[index].keys(&cx)
+                    }
+                    None => Vec::new(),
+                };
+                Help::full(tab, keys)
             }
-            None => Vec::new(),
-        };
-        self.sheet = Some(ActiveSheet::Help(Help {
-            tab,
-            tab_hints: hints,
         }));
     }
 
@@ -557,7 +690,7 @@ impl DesktopApp {
             Key::Down => self.shared.connection.movement += 1,
             Key::Up => self.shared.connection.movement -= 1,
             // Box 4 grouping: g cycles none → host → process; space, ←→ and Z
-            // fold groups. Space pauses only when there is nothing to fold.
+            // fold groups. p / f pause.
             Key::Char('g') => {
                 self.dense.cycle_group();
                 self.prefs.dense_group = self.dense.group.name().into();
@@ -567,7 +700,7 @@ impl DesktopApp {
             Key::Enter if self.dense.group_cursor.is_some() => {
                 self.dense.fold_key(key);
             }
-            Key::Char('p') | Key::Space | Key::Char('f') => self.toggle_freeze = true,
+            Key::Char('p') | Key::Char('f') => self.toggle_freeze = true,
             Key::Char('d') => self.apply_nav(ctx, Nav::Tab(Tab::Diagnose), s),
             Key::Esc => {
                 if self.dense.zoom.is_some() {
@@ -588,7 +721,7 @@ impl DesktopApp {
                     _ => 30.0,
                 };
             }
-            Key::Char('r') | Key::Char('R') => self.send(Command::ToggleRecorder),
+            Key::Char('R') => self.send(Command::ToggleRecorder),
             Key::Char('F') => self.send(Command::FreezeRecorder),
             Key::Char('e') => self.send(Command::ExportReport),
             Key::Char('E') => self.send(Command::ExportIncident),
@@ -667,6 +800,35 @@ impl DesktopApp {
                 self.prefs_dirty = true;
             }
             Nav::SetView(name) => self.set_view(ctx, View::from_name(name)),
+            Nav::Global(key) => self.global_key(ctx, key, s),
+            Nav::CycleTheme => self.cycle_theme(),
+            Nav::ToggleDock => {
+                self.prefs.show_dock = !self.prefs.show_dock;
+                self.prefs_dirty = true;
+            }
+            Nav::ToggleNavigator => {
+                self.prefs.nav_collapsed = !self.prefs.nav_collapsed;
+                self.prefs_dirty = true;
+            }
+            Nav::ToggleLiteOnTop => {
+                self.prefs.lite_on_top = !self.prefs.lite_on_top;
+                self.prefs_dirty = true;
+                if self.view == View::Lite {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                        if self.prefs.lite_on_top {
+                            egui::WindowLevel::AlwaysOnTop
+                        } else {
+                            egui::WindowLevel::Normal
+                        },
+                    ));
+                }
+                self.toast = Some(Toast::ok(if self.prefs.lite_on_top {
+                    "lite stays on top"
+                } else {
+                    "lite no longer on top"
+                }));
+            }
+            Nav::OpenFirstRun => self.open_sheet("firstrun", s),
             Nav::ToggleBtop | Nav::ToggleFade => {
                 let mut look = theme::graphs();
                 if nav == Nav::ToggleBtop {
@@ -717,17 +879,39 @@ impl DesktopApp {
             ("flight recorder & export", "sheet", "E", Key::Char('E')),
             ("settings", "config.toml", ",", Key::Char(',')),
             ("help", "every key", "?", Key::Char('?')),
-            ("cycle theme", "", "t", Key::Char('t')),
-            ("lite view", "small window", "L", Key::Char('L')),
+            ("diagnose", "open issues", "d", Key::Char('d')),
             ("quit", "", "q", Key::Char('q')),
         ] {
-            entries.push(command(label, detail, key, Nav::Key(k)));
+            entries.push(command(label, detail, key, Nav::Global(k)));
         }
+        let (full, lite, dense) = match self.view {
+            View::Full => ("", "V", "V V"),
+            View::Lite => ("L", "", "V"),
+            View::Dense => ("V", "L", ""),
+        };
+        entries.push(command(
+            "full view",
+            "workbench",
+            full,
+            Nav::SetView("full"),
+        ));
+        entries.push(command(
+            "lite view",
+            "small window",
+            lite,
+            Nav::SetView("lite"),
+        ));
         entries.push(command(
             "dense view",
             "four boxes",
-            "V",
+            dense,
             Nav::SetView("dense"),
+        ));
+        entries.push(command(
+            "cycle theme",
+            theme::current().name,
+            "",
+            Nav::CycleTheme,
         ));
         let look = theme::graphs();
         entries.push(command(
@@ -737,7 +921,7 @@ impl DesktopApp {
                 "graphs: switch to btop dots"
             },
             "every chart · saved to config",
-            "menu",
+            "",
             Nav::ToggleBtop,
         ));
         entries.push(command(
@@ -747,14 +931,44 @@ impl DesktopApp {
                 "graph fade: on"
             },
             "magnitude gradient · saved to config",
-            "menu",
+            "",
             Nav::ToggleFade,
         ));
         entries.push(command(
-            "full view",
-            "workbench",
-            "esc",
-            Nav::SetView("full"),
+            if self.prefs.show_dock {
+                "hide timeline dock"
+            } else {
+                "show timeline dock"
+            },
+            "dashboard · connections · diagnose",
+            "",
+            Nav::ToggleDock,
+        ));
+        entries.push(command(
+            if self.prefs.nav_collapsed {
+                "expand navigator"
+            } else {
+                "collapse navigator"
+            },
+            "icon rail",
+            "",
+            Nav::ToggleNavigator,
+        ));
+        entries.push(command(
+            if self.prefs.lite_on_top {
+                "lite: stop keeping on top"
+            } else {
+                "lite: keep on top"
+            },
+            "lite window above others",
+            "",
+            Nav::ToggleLiteOnTop,
+        ));
+        entries.push(command(
+            "first run & permissions",
+            "grant commands",
+            "",
+            Nav::OpenFirstRun,
         ));
         for tab in Tab::ALL {
             entries.push(Entry {
@@ -826,7 +1040,7 @@ impl DesktopApp {
                 group: "entity",
                 label: label.clone(),
                 detail: "process".into(),
-                key: "8".into(),
+                key: "↵".into(),
                 action: Nav::Drill {
                     tab: Tab::Processes,
                     crumb: label,
@@ -840,6 +1054,23 @@ impl DesktopApp {
         entries
     }
 
+    /// Keeps the saved full or lite window size current, in window points
+    /// (what the viewport is created with), not zoomed layout points.
+    fn record_window(&mut self, ctx: &egui::Context) {
+        let size = window_size(ctx);
+        let slot = match self.view {
+            View::Full => &mut self.prefs.window,
+            View::Lite => &mut self.prefs.lite_window,
+            View::Dense => return,
+        };
+        let changed =
+            slot.is_none_or(|[w, h]| (w - size.x).abs() > 1.0 || (h - size.y).abs() > 1.0);
+        if changed && size.x > 0.0 {
+            *slot = Some([size.x, size.y]);
+            self.prefs_dirty = true;
+        }
+    }
+
     fn save_prefs(&mut self, ctx: &egui::Context) {
         if self.ephemeral {
             self.prefs_dirty = false;
@@ -851,10 +1082,7 @@ impl DesktopApp {
             }
         }
         self.prefs.dense_text = self.dense.text_size;
-        if self.view == View::Full {
-            let size = ctx.screen_rect().size();
-            self.prefs.window = Some([size.x, size.y]);
-        }
+        self.record_window(ctx);
         let _ = self.prefs.save();
         self.prefs_dirty = false;
         self.prefs_saved_at = Instant::now();
@@ -875,15 +1103,29 @@ impl eframe::App for DesktopApp {
         if self.theme_applied != Some(theme::current().name) {
             if self.theme_applied.is_none() {
                 ctx.set_zoom_factor(self.prefs.zoom.clamp(0.75, 2.5));
+                if self.view == View::Lite && self.prefs.lite_on_top {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                        egui::WindowLevel::AlwaysOnTop,
+                    ));
+                }
             }
             theme::apply(ctx);
             self.theme_applied = Some(theme::current().name);
         }
+        // Dense sizes its own text (ctrl ± there changes it), so the UI zoom
+        // is 1.0 while it's showing; the saved zoom returns with full and lite.
         let zoom = ctx.zoom_factor();
-        if (zoom - self.prefs.zoom).abs() > 0.001 {
+        if self.view == View::Dense {
+            if (zoom - 1.0).abs() > 0.001 {
+                ctx.set_zoom_factor(1.0);
+            }
+        } else if self.dense_zoomed_out {
+            ctx.set_zoom_factor(self.prefs.zoom.clamp(0.75, 2.5));
+        } else if (zoom - self.prefs.zoom).abs() > 0.001 {
             self.prefs.zoom = zoom;
             self.prefs_dirty = true;
         }
+        self.dense_zoomed_out = self.view == View::Dense;
         ctx.request_repaint_after(Duration::from_millis(if self.shared.controls.animate {
             100
         } else {
@@ -924,25 +1166,37 @@ impl eframe::App for DesktopApp {
         }
         if !self.first_run_checked {
             if let Some(s) = live.as_deref() {
-                self.first_run_checked = true;
                 let fingerprint = sheets::first_run::fingerprint(s);
-                let lost = self
-                    .prefs
-                    .first_run_seen
-                    .as_deref()
-                    .is_some_and(|seen| sheets::first_run::lost_grant(seen, &fingerprint));
-                if self.prefs.first_run_seen.is_none() || lost {
+                if self.prefs.first_run_seen.is_none() {
                     self.open_sheet("firstrun", Some(s));
                 }
-                self.prefs.first_run_seen = Some(fingerprint);
-                self.prefs_dirty = true;
+                let seen = self.prefs.first_run_seen.clone().unwrap_or_default();
+                if sheets::first_run::lost_grant(&seen, &fingerprint) && self.sheet.is_none() {
+                    self.open_sheet("firstrun", Some(s));
+                }
+                // Capabilities report "not checked" while they start, so keep
+                // looking until every one has settled (or 20 s pass), and
+                // never overwrite a known state with "not checked".
+                let merged = sheets::first_run::merge_fingerprint(&seen, &fingerprint);
+                if self.prefs.first_run_seen.as_deref() != Some(merged.as_str()) {
+                    self.prefs.first_run_seen = Some(merged);
+                    self.prefs_dirty = true;
+                }
+                let settled = !fingerprint.contains("=not checked");
+                if settled || self.started.elapsed() > Duration::from_secs(20) {
+                    self.first_run_checked = true;
+                }
             }
         }
 
         if !self.capture.active() {
-            let (keys, palette) = Self::collect_keys(ctx, std::mem::take(&mut self.tab_presses));
+            let (keys, palette, copy) =
+                Self::collect_keys(ctx, std::mem::take(&mut self.tab_presses));
             if palette && self.sheet.is_none() {
                 self.open_sheet("palette", snapshot.as_deref());
+            }
+            if copy && self.sheet.is_none() && self.view == View::Full {
+                self.copy_selection(ctx, snapshot.as_deref());
             }
             let mut pending: Vec<Key> = std::mem::take(&mut self.clicked);
             pending.extend(keys);
@@ -992,6 +1246,9 @@ impl eframe::App for DesktopApp {
         }
         self.draw_sheet(ctx, snapshot.as_deref());
 
+        if !self.ephemeral {
+            self.record_window(ctx);
+        }
         if self.prefs_dirty && self.prefs_saved_at.elapsed() > Duration::from_secs(2) {
             self.save_prefs(ctx);
         }
@@ -1015,8 +1272,8 @@ impl eframe::App for DesktopApp {
 impl DesktopApp {
     fn draw_full(&mut self, ctx: &egui::Context, s: Option<&Snapshot>, live: Option<&Snapshot>) {
         let width = ctx.screen_rect().width();
-        let rail = width < 1180.0 || self.prefs.nav_collapsed;
-        let compact = width < 1000.0;
+        let rail = width < RAIL_WIDTH || self.prefs.nav_collapsed;
+        let compact = width < COMPACT_WIDTH;
         let tab = self.tab();
         let index = Self::screen_index(tab);
         let filter = self.filter();
@@ -1084,13 +1341,7 @@ impl DesktopApp {
                         .fill(theme::window_bg())
                         .inner_margin(16.0),
                 )
-                .show(ctx, |ui| {
-                    ui.label(ui_kit::label(
-                        self.backend
-                            .error()
-                            .unwrap_or_else(|| "starting netwatch collectors…".into()),
-                    ));
-                });
+                .show(ctx, |ui| self.startup_screen(ui));
             self.finish(ctx, commands, nav, None);
             return;
         };
@@ -1115,9 +1366,12 @@ impl DesktopApp {
         }
 
         if tab.has_dock() && self.prefs.show_dock {
+            // Short windows give the panels above priority: the dock takes at
+            // most a fifth of the height (and its saved height is kept).
+            let cap = (ctx.screen_rect().height() * 0.2).clamp(96.0, 330.0);
             let response = egui::TopBottomPanel::bottom("timeline_dock")
-                .default_height(self.prefs.dock_height)
-                .height_range(130.0..=330.0)
+                .default_height(self.prefs.dock_height.min(cap))
+                .height_range(130.0_f32.min(cap)..=cap)
                 .resizable(true)
                 .frame(
                     egui::Frame::none()
@@ -1131,7 +1385,7 @@ impl DesktopApp {
                     }
                 });
             let height = response.response.rect.height();
-            if (height - self.prefs.dock_height).abs() > 1.0 {
+            if height < cap - 1.0 && (height - self.prefs.dock_height).abs() > 1.0 {
                 self.prefs.dock_height = height;
                 self.prefs_dirty = true;
             }
@@ -1219,6 +1473,12 @@ impl DesktopApp {
                     let cx = cx!(self, s, &mut c, &mut n, filter, compact);
                     parts.extend(self.screens[index].crumbs(&cx));
                 }
+                // Centred command field. The breadcrumb gives way to it:
+                // middle levels collapse to …, then the rest shortens.
+                let field_w = 420.0_f32.min(rect.width() - 700.0).max(160.0);
+                let field = Rect::from_center_size(rect.center(), vec2(field_w, 26.0));
+                let budget = field.left() - 16.0 - ui.cursor().left();
+                let parts = fit_breadcrumb(ui, parts, budget);
                 let last = parts.len().saturating_sub(1);
                 for (i, part) in parts.iter().enumerate() {
                     if i > 0 {
@@ -1230,11 +1490,7 @@ impl DesktopApp {
                         ui_kit::mono(part, theme::DATA, theme::muted())
                     });
                 }
-
-                // Centred command field.
-                let field_w = 420.0_f32.min(rect.width() - 700.0).max(160.0);
-                let field = Rect::from_center_size(rect.center(), vec2(field_w, 26.0));
-                if field.left() > ui.min_rect().right() + 12.0 {
+                if field.left() > ui.min_rect().right() + 4.0 {
                     let mut drawn = false;
                     if let Some(s) = s {
                         let index = Self::screen_index(self.tab());
@@ -1268,16 +1524,18 @@ impl DesktopApp {
                             theme::muted(),
                             Align::Min,
                         );
+                        let chord = crate::sheets::palette_chord();
+                        let chord_w = ui_kit::text_width(ui, chord, FontId::monospace(9.0)) + 10.0;
                         let k = Rect::from_min_size(
-                            field.right_top() + vec2(-34.0, 6.0),
-                            vec2(26.0, 14.0),
+                            field.right_top() + vec2(-8.0 - chord_w, 6.0),
+                            vec2(chord_w, 14.0),
                         );
                         ui.painter()
                             .rect_stroke(k, 3.0, Stroke::new(1.0_f32, theme::border()));
                         ui_kit::paint_text(
                             ui,
                             k,
-                            "⌘K",
+                            crate::sheets::palette_chord(),
                             FontId::monospace(9.0),
                             theme::muted(),
                             Align::Center,
@@ -1422,6 +1680,18 @@ impl DesktopApp {
                     }
                 }
             });
+            let mut dock = self.prefs.show_dock;
+            if ui.checkbox(&mut dock, "timeline dock").changed() {
+                nav.push(Nav::ToggleDock);
+            }
+            let mut rail = self.prefs.nav_collapsed;
+            if ui.checkbox(&mut rail, "collapse navigator").changed() {
+                nav.push(Nav::ToggleNavigator);
+            }
+            let mut on_top = self.prefs.lite_on_top;
+            if ui.checkbox(&mut on_top, "lite window on top").changed() {
+                nav.push(Nav::ToggleLiteOnTop);
+            }
             ui_kit::rule(ui);
             if ui.button("settings  ,").clicked() {
                 nav.push(Nav::Key(Key::Char(',')));
@@ -1575,31 +1845,66 @@ impl DesktopApp {
         filter: Option<&Filter>,
         compact: bool,
     ) {
-        let mut hints = vec![Hint::ch(':', "command")];
-        if let Some(s) = s {
-            let mut c = Vec::new();
-            let mut n = Vec::new();
-            let index = Self::screen_index(self.tab());
-            let cx = cx!(self, s, &mut c, &mut n, filter, compact);
-            hints.extend(self.screens[index].hints(&cx));
+        let mut hints = Vec::new();
+        match s {
+            Some(s) => {
+                hints.push(Hint::ch(':', "command"));
+                let mut c = Vec::new();
+                let mut n = Vec::new();
+                let index = Self::screen_index(self.tab());
+                // Narrow windows have no inspector column; its key comes first.
+                if compact && self.screens[index].inspector_width().is_some() {
+                    hints.push(Hint::ch('I', "inspector"));
+                }
+                let cx = cx!(self, s, &mut c, &mut n, filter, compact);
+                hints.extend(self.screens[index].hints(&cx));
+                hints.push(Hint::ch('?', "help"));
+            }
+            None => hints = self.startup_hints(),
         }
-        hints.push(Hint::ch('?', "help"));
         let full = ui.max_rect();
+        // Successes fade after 8 s; failures stay 20 s.
         let toast = self
             .toast
             .as_ref()
-            .filter(|t| t.at.elapsed() < Duration::from_secs(20))
+            .filter(|t| t.at.elapsed() < Duration::from_secs(if t.ok { 8 } else { 20 }))
             .cloned();
+        let font = FontId::monospace(theme::LABEL);
         let toast_w = toast
             .as_ref()
-            .map(|t| ui_kit::text_width(ui, &t.text, FontId::monospace(theme::LABEL)) + 24.0)
+            .map(|t| ui_kit::text_width(ui, &t.text, font.clone()) + 24.0)
             .unwrap_or(0.0)
-            .min(full.width() * 0.55);
+            .min(full.width() * 0.35);
         let keys_rect = Rect::from_min_max(full.min, pos2(full.right() - toast_w, full.bottom()));
+        // Drop whole hints, least-used last in the list first, so no hint is
+        // ever clipped mid-word; `? help` always stays.
+        // As `hint_row` lays them out: key, 6 pt, label, then a 10 pt gap and
+        // the row's item spacing on both sides of it.
+        let width_of = |ui: &Ui, h: &Hint| {
+            ui_kit::text_width(ui, &h.key_text(), font.clone())
+                + 6.0
+                + ui_kit::text_width(ui, &h.label, font.clone())
+                + 10.0
+                + 2.0 * ui.spacing().item_spacing.x
+        };
+        let available = keys_rect.width() - 12.0;
+        let help = hints.pop_if(|h| h.key == Key::Char('?'));
+        let reserve = help.as_ref().map(|h| width_of(ui, h)).unwrap_or(0.0);
+        let mut used = reserve;
+        let mut shown = Vec::new();
+        for hint in hints {
+            let w = width_of(ui, &hint);
+            if used + w > available {
+                break;
+            }
+            used += w;
+            shown.push(hint);
+        }
+        shown.extend(help);
         ui.allocate_ui_at_rect(keys_rect, |ui| {
             ui.set_clip_rect(keys_rect.intersect(ui.clip_rect()));
             ui.horizontal_centered(|ui| {
-                if let Some(key) = ui_kit::hint_row(ui, &hints) {
+                if let Some(key) = ui_kit::hint_row(ui, &shown) {
                     self.clicked.push(key);
                 }
             });
@@ -1616,6 +1921,9 @@ impl DesktopApp {
             } else {
                 format!("{glyph} {}", toast.text)
             };
+            // Paths end in the part that matters (the file name), so shorten
+            // the middle rather than the end.
+            let text = middle_ellipsis(ui, &text, FontId::monospace(theme::LABEL), toast_w - 8.0);
             ui_kit::paint_text(
                 ui,
                 toast_rect,
@@ -1845,6 +2153,84 @@ fn take_tab_presses(events: &mut Vec<egui::Event>) -> usize {
     presses
 }
 
+/// `text` shortened in the middle with `…` to fit `width` points.
+fn middle_ellipsis(ui: &Ui, text: &str, font: FontId, width: f32) -> String {
+    if ui_kit::text_width(ui, text, font.clone()) <= width {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut keep = chars.len();
+    while keep > 4 {
+        keep -= 1;
+        let head = keep / 3;
+        let tail = keep - head;
+        let candidate: String = chars[..head]
+            .iter()
+            .chain(std::iter::once(&'…'))
+            .chain(&chars[chars.len() - tail..])
+            .collect();
+        if ui_kit::text_width(ui, &candidate, font.clone()) <= width {
+            return candidate;
+        }
+    }
+    "…".into()
+}
+
+/// The window's inner size in points before UI zoom: what
+/// `ViewportCommand::InnerSize` and the saved layout use.
+fn window_size(ctx: &egui::Context) -> egui::Vec2 {
+    ctx.screen_rect().size() * ctx.zoom_factor()
+}
+
+/// Breadcrumb parts that fit `budget` points: middle levels become one
+/// `…`, then the first and last parts shorten from the end.
+fn fit_breadcrumb(ui: &Ui, mut parts: Vec<String>, budget: f32) -> Vec<String> {
+    let font = FontId::monospace(theme::DATA);
+    let width = |ui: &Ui, parts: &[String]| {
+        parts
+            .iter()
+            .map(|p| ui_kit::text_width(ui, p, font.clone()) + 8.0)
+            .sum::<f32>()
+            + parts.len().saturating_sub(1) as f32
+                * (ui_kit::text_width(ui, "›", font.clone()) + 8.0)
+    };
+    while width(ui, &parts) > budget && parts.len() > 3 {
+        if parts[1] == "…" {
+            parts.remove(2);
+        } else {
+            parts[1] = "…".into();
+        }
+    }
+    let shorten = |text: &str, keep: usize| -> String {
+        let chars: Vec<char> = text.chars().collect();
+        if chars.len() <= keep {
+            text.to_string()
+        } else {
+            chars[..keep.saturating_sub(1)]
+                .iter()
+                .chain(std::iter::once(&'…'))
+                .collect()
+        }
+    };
+    let mut guard = 0;
+    while width(ui, &parts) > budget && guard < 200 {
+        guard += 1;
+        // Shorten the longest part that isn't the current level first.
+        let last = parts.len() - 1;
+        let target = (0..parts.len())
+            .filter(|i| *i != last || parts.len() == 1)
+            .max_by_key(|i| parts[*i].chars().count())
+            .filter(|i| parts[*i].chars().count() > 6)
+            .unwrap_or(last);
+        let len = parts[target].chars().count();
+        if len <= 4 {
+            break;
+        }
+        parts[target] = shorten(&parts[target], len - 1);
+    }
+    parts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1980,11 +2366,101 @@ mod tests {
             &app.displayed_snapshot(Some(b.clone())).unwrap(),
             &a
         ));
+        // Space is for panel actions: it doesn't resume.
         press(&mut app, &ctx, Key::Space, &s);
+        assert!(Arc::ptr_eq(
+            &app.displayed_snapshot(Some(b.clone())).unwrap(),
+            &a
+        ));
+        press(&mut app, &ctx, Key::Char('p'), &s);
         assert!(Arc::ptr_eq(
             &app.displayed_snapshot(Some(b.clone())).unwrap(),
             &b
         ));
+    }
+    #[test]
+    fn shell_keys_are_the_same_on_every_tab() {
+        let ctx = egui::Context::default();
+        let s = crate::backend::tests::snapshot();
+        // d opens diagnose from a tab that doesn't bind it.
+        let mut app = DesktopApp::new(Backend::preview(), Tab::Stats);
+        press(&mut app, &ctx, Key::Char('d'), &s);
+        assert_eq!(app.tab(), Tab::Diagnose);
+        // t no longer re-themes (graph tabs own it).
+        let theme = theme::current().name;
+        let mut app = DesktopApp::new(Backend::preview(), Tab::Stats);
+        press(&mut app, &ctx, Key::Char('t'), &s);
+        assert_eq!(theme::current().name, theme);
+        // Palette commands skip the tab's keys: pause pauses on connections.
+        let mut app = DesktopApp::new(Backend::preview(), Tab::Connections);
+        let _ = ctx.run(Default::default(), |ctx| {
+            app.apply_nav(ctx, Nav::Global(Key::Char('p')), Some(&s))
+        });
+        assert!(app.toggle_freeze);
+        assert_eq!(app.tab(), Tab::Connections);
+        let entries = app.palette_entries(&s);
+        assert!(entries
+            .iter()
+            .filter(|e| e.group == "command" && e.detail != "connections")
+            .all(|e| !matches!(e.action, Nav::Key(_))));
+        assert!(entries.iter().any(|e| e.action == Nav::ToggleDock));
+    }
+    #[test]
+    fn dock_navigator_and_lite_toggles_persist() {
+        let ctx = egui::Context::default();
+        let s = crate::backend::tests::snapshot();
+        let mut app = DesktopApp::new(Backend::preview(), Tab::Dashboard);
+        let dock = app.prefs.show_dock;
+        let _ = ctx.run(Default::default(), |ctx| {
+            app.apply_nav(ctx, Nav::ToggleDock, Some(&s));
+            app.apply_nav(ctx, Nav::ToggleNavigator, Some(&s));
+            app.apply_nav(ctx, Nav::ToggleLiteOnTop, Some(&s));
+        });
+        assert_eq!(app.prefs.show_dock, !dock);
+        assert!(app.prefs.nav_collapsed);
+        assert!(app.prefs.lite_on_top);
+        assert!(app.prefs_dirty);
+    }
+    #[test]
+    fn without_a_snapshot_only_startup_keys_work() {
+        let ctx = egui::Context::default();
+        let mut app = DesktopApp::new(Backend::preview(), Tab::Dashboard);
+        for key in [Key::Char('?'), Key::Char(','), Key::Char(':')] {
+            let _ = ctx.run(Default::default(), |ctx| app.dispatch(ctx, key, None));
+            assert!(app.sheet.is_none(), "{key:?} opened a sheet with no data");
+        }
+        let _ = ctx.run(Default::default(), |ctx| {
+            app.dispatch(ctx, Key::Char('q'), None)
+        });
+        assert!(app.quit);
+    }
+    #[test]
+    fn breadcrumb_and_toast_shorten_to_fit() {
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let parts: Vec<String> = [
+                    "connections",
+                    "firefox:443",
+                    "packets",
+                    "stream 12",
+                    "10.0.0.1",
+                ]
+                .map(String::from)
+                .to_vec();
+                let fitted = fit_breadcrumb(ui, parts.clone(), 10_000.0);
+                assert_eq!(fitted, parts);
+                let fitted = fit_breadcrumb(ui, parts, 260.0);
+                assert_eq!(fitted[0], "connections");
+                assert_eq!(fitted[1], "…");
+                assert_eq!(fitted.last().unwrap(), "10.0.0.1");
+                let path =
+                    "✓ exported /home/matt/.local/share/netwatch/exports/connections-20260915.json";
+                let short = middle_ellipsis(ui, path, FontId::monospace(theme::LABEL), 220.0);
+                assert!(short.contains('…') && short.ends_with(".json"), "{short}");
+            });
+        });
     }
     #[test]
     fn every_tab_and_sheet_renders_in_the_full_frame_without_data() {
