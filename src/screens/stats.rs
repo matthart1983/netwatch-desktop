@@ -919,7 +919,7 @@ impl Screen for Stats {
 
     fn keys(&self, _cx: &Cx) -> Vec<Hint> {
         vec![
-            Hint::ch(']', "next window (5m · 15m · session)"),
+            Hint::ch(']', "next window (5m · 15m · session) · t too"),
             Hint::ch('[', "previous window"),
             Hint::ch('u', "bytes / frames"),
             Hint::ch('e', "export csv"),
@@ -929,7 +929,8 @@ impl Screen for Stats {
     fn key(&mut self, key: Key, cx: &mut Cx) -> bool {
         match key {
             Key::Char('[') => self.window = self.window.step(-1),
-            Key::Char(']') => self.window = self.window.step(1),
+            // t cycles the window like the TUI's stats t (and every graph tab).
+            Key::Char(']') | Key::Char('t') => self.window = self.window.step(1),
             Key::Char('u') => {
                 self.unit = match self.unit {
                     Unit::Bytes => Unit::Frames,
