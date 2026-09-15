@@ -259,6 +259,29 @@ fn display_filter_editing_and_exports() {
     assert_eq!(screen.applied, "10.88.0.3");
     screen.on_filter(None, &mut h.cx(&s, None));
     assert_eq!(screen.applied, "");
+    // An expression that doesn't parse is never applied (the crate would
+    // match every packet); it opens in the field with its reason.
+    screen.on_filter(
+        Some(&Filter::Display("host 10.0.0.1".into())),
+        &mut h.cx(&s, None),
+    );
+    assert_eq!(screen.applied, "");
+    assert!(screen.editing);
+    assert_eq!(screen.draft, "host 10.0.0.1");
+    assert!(model::filter_error(&screen.draft).is_some());
+    // The README's examples all parse.
+    for expr in [
+        "tcp",
+        "dns",
+        "10.0.0.1",
+        "port 443",
+        "stream 7",
+        "sni:github",
+        "decrypted:true",
+        "not tcp",
+    ] {
+        assert!(model::filter_error(expr).is_none(), "{expr}");
+    }
 }
 
 #[test]
@@ -303,4 +326,66 @@ fn stream_actions_and_capture_commands() {
     let hints = screen.hints(&h.cx(&s, None));
     assert!(hints.iter().any(|h| h.label == "next finding"));
     assert!(hints.iter().any(|h| h.label == "interface"));
+}
+
+#[test]
+fn s_follows_the_stream_conversation() {
+    use netwatch::collectors::packets::{StreamDirection, StreamSegment};
+    let s = fixture();
+    {
+        let mut tracker = s.packets.streams.lock().unwrap();
+        let stream = tracker.all_streams.get_mut(&7).unwrap();
+        let seg = |id: u64, direction, payload: &[u8], decrypted: Option<&[u8]>| StreamSegment {
+            packet_id: id,
+            timestamp: String::new(),
+            direction,
+            payload: payload.to_vec(),
+            decrypted: decrypted.map(<[u8]>::to_vec),
+        };
+        // The key orders endpoints lexically, so the server 10.88.0.3 is key
+        // a and the client's segments run b → a.
+        stream.segments = vec![
+            seg(3, StreamDirection::BtoA, b"\x16\x03\x01hello", None),
+            seg(
+                4,
+                StreamDirection::BtoA,
+                b"\x17xx",
+                Some(b"GET / HTTP/1.1\r\nHost: example.com\r\n"),
+            ),
+            seg(
+                5,
+                StreamDirection::AtoB,
+                b"\x17yy",
+                Some(b"HTTP/1.1 200 OK\r\n"),
+            ),
+        ];
+    }
+    let ctx = ctx();
+    let mut screen = Packets::default();
+    let mut h = Harness::new();
+    frame(&ctx, &mut screen, &mut h, &s);
+    screen.key(Key::Up, &mut h.cx(&s, None));
+    frame(&ctx, &mut screen, &mut h, &s);
+    assert!(screen.stream.is_some());
+    assert!(screen
+        .hints(&h.cx(&s, None))
+        .iter()
+        .any(|h| h.label == "conversation"));
+
+    assert!(screen.key(Key::Char('s'), &mut h.cx(&s, None)));
+    assert!(screen.conversation);
+    frame(&ctx, &mut screen, &mut h, &s);
+    let conv = screen.turns.as_ref().expect("conversation built");
+    // Decrypted-only once any segment decrypted, oriented by initiator.
+    assert_eq!(conv.raw_hidden, 1);
+    assert_eq!(conv.turns.len(), 2);
+    assert!(conv.turns[0].from_client && !conv.turns[1].from_client);
+    assert_eq!(conv.turns[0].text, "GET / HTTP/1.1\nHost: example.com");
+    frame(&ctx, &mut screen, &mut h, &s);
+
+    // Esc closes it before it would go back.
+    assert!(screen.key(Key::Esc, &mut h.cx(&s, None)));
+    assert!(!screen.conversation);
+    frame(&ctx, &mut screen, &mut h, &s);
+    assert!(screen.turns.is_none());
 }

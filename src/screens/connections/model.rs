@@ -400,7 +400,92 @@ pub fn filter_matches(s: &Snapshot, filter: Option<&Filter>, c: &Connection) -> 
             info.ipv4.as_deref() == Some(local.as_str())
                 || info.ipv6.as_deref() == Some(local.as_str())
         }
+        Some(Filter::At { host: Some(h), .. }) => {
+            filter_matches(s, Some(&Filter::Host(h.clone())), c)
+        }
+        Some(Filter::At { host: None, .. }) => true,
         Some(Filter::Stream(_)) | Some(Filter::Display(_)) => true,
+    }
+}
+
+/// Sockets open at a past moment, rebuilt from the connection timeline.
+pub struct OpenAt {
+    /// Still-open sockets as their live entries, then closed ones rebuilt
+    /// from what the timeline kept: 5-tuple, process and `CLOSED`, with no
+    /// measurements.
+    pub connections: Vec<Connection>,
+    pub still_open: usize,
+    pub closed: usize,
+}
+
+/// The collector samples once per `sample_interval`, so a socket is counted
+/// as open at `at` when it was seen within one interval of it.
+pub fn open_at(s: &Snapshot, at: Instant) -> OpenAt {
+    let slack = Duration::from_secs_f64(s.sample_interval.max(0.1));
+    let live: HashMap<(&str, &str, &str, Option<u32>), &Connection> = s
+        .connections
+        .iter()
+        .map(|c| {
+            (
+                (
+                    c.protocol.as_str(),
+                    c.local_addr.as_str(),
+                    c.remote_addr.as_str(),
+                    c.pid,
+                ),
+                c,
+            )
+        })
+        .collect();
+    let mut open = Vec::new();
+    let mut closed = Vec::new();
+    for t in s.tracked.iter() {
+        if t.first_seen > at + slack || t.last_seen + slack < at {
+            continue;
+        }
+        let key = (
+            t.key.protocol.as_str(),
+            t.key.local_addr.as_str(),
+            t.key.remote_addr.as_str(),
+            t.key.pid,
+        );
+        match live.get(&key).filter(|_| t.is_active) {
+            Some(c) => open.push((*c).clone()),
+            None => closed.push(Connection {
+                protocol: t.key.protocol.clone(),
+                local_addr: t.key.local_addr.clone(),
+                remote_addr: t.key.remote_addr.clone(),
+                state: CLOSED.into(),
+                pid: t.key.pid,
+                process_name: t.process_name.clone(),
+                handshake_rtt_us: None,
+                rx_rate: None,
+                tx_rate: None,
+                attribution: Default::default(),
+                evidence: Default::default(),
+                app_protocol: None,
+                retransmits: 0,
+                out_of_order: 0,
+            }),
+        }
+    }
+    let (still_open, closed_count) = (open.len(), closed.len());
+    open.extend(closed);
+    OpenAt {
+        connections: open,
+        still_open,
+        closed: closed_count,
+    }
+}
+
+/// State given to sockets rebuilt from the timeline after they closed.
+pub const CLOSED: &str = "CLOSED";
+
+/// The past moment the connections view is pinned to, if any.
+pub fn pinned_at(filter: Option<&Filter>) -> Option<Instant> {
+    match filter {
+        Some(Filter::At { at, .. }) => Some(*at),
+        _ => None,
     }
 }
 

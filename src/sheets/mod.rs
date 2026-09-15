@@ -47,6 +47,8 @@ pub struct Palette {
     pub selected: usize,
     pub recent: Vec<String>,
     focus_requested: bool,
+    /// Tab arrives as a shell key, not egui input; completes on next draw.
+    complete: bool,
 }
 
 impl Palette {
@@ -57,6 +59,7 @@ impl Palette {
             selected: 0,
             recent,
             focus_requested: false,
+            complete: false,
         }
     }
 
@@ -213,14 +216,14 @@ impl Sheet for Palette {
                     });
                 }
             });
-        let (enter, down, up, tab) = ui.input(|i| {
+        let (enter, down, up) = ui.input(|i| {
             (
                 i.key_pressed(egui::Key::Enter),
                 i.key_pressed(egui::Key::ArrowDown),
                 i.key_pressed(egui::Key::ArrowUp),
-                i.key_pressed(egui::Key::Tab),
             )
         });
+        let tab = std::mem::take(&mut self.complete);
         if down {
             self.selected = (self.selected + 1).min(count.saturating_sub(1));
         }
@@ -282,6 +285,10 @@ impl Sheet for Palette {
     fn key(&mut self, key: Key, _cx: &mut Cx) -> SheetKey {
         match key {
             Key::Esc => SheetKey::Close,
+            Key::Tab => {
+                self.complete = true;
+                SheetKey::Consumed
+            }
             // The text field handles typing, arrows and ↵ itself.
             _ => SheetKey::Consumed,
         }

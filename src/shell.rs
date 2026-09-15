@@ -164,6 +164,13 @@ pub enum Filter {
     Stream(u32),
     /// A packets display filter expression.
     Display(String),
+    /// A moment picked on the timeline (`clock` is its HH:MM:SS), optionally
+    /// narrowed to one host. Connections shows the sockets open then.
+    At {
+        at: Instant,
+        clock: String,
+        host: Option<String>,
+    },
 }
 
 impl Filter {
@@ -177,6 +184,10 @@ impl Filter {
             Filter::Iface(i) => i.clone(),
             Filter::Stream(n) => format!("stream {n}"),
             Filter::Display(f) => f.clone(),
+            Filter::At { clock, host, .. } => match host {
+                Some(host) => format!("@{clock} · {host}"),
+                None => format!("@{clock}"),
+            },
         }
     }
 }

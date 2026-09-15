@@ -14,7 +14,7 @@ mod model;
 mod view;
 
 use decode::Layer;
-use model::{Built, Lite, Narrow, StreamInfo};
+use model::{Built, Conversation, Lite, Narrow, StreamInfo};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Direction {
@@ -85,6 +85,12 @@ pub struct Packets {
     layers: Vec<Layer>,
     stream: Option<StreamInfo>,
     stream_key: Option<(u32, Instant)>,
+    /// `s`: the bottom panes show the selected stream's conversation.
+    conversation: bool,
+    /// Built with `stream` while `conversation` is on.
+    turns: Option<Conversation>,
+    /// Scroll the conversation to the selected packet's turn next frame.
+    conversation_scroll: bool,
 }
 
 impl Default for Packets {
@@ -119,6 +125,9 @@ impl Default for Packets {
             layers: Vec::new(),
             stream: None,
             stream_key: None,
+            conversation: false,
+            turns: None,
+            conversation_scroll: false,
         }
     }
 }
@@ -223,6 +232,7 @@ impl Packets {
             self.layers.clear();
             self.stream = None;
             self.stream_key = None;
+            self.turns = None;
             return;
         };
         if self.packet_key != Some((id, self.ring)) {
@@ -251,6 +261,7 @@ impl Packets {
         let Some(index) = self.packet.as_ref().and_then(|p| p.stream_index) else {
             self.stream = None;
             self.stream_key = None;
+            self.turns = None;
             return;
         };
         if self.stream_key == Some((index, s.observed_at)) {
@@ -267,6 +278,8 @@ impl Packets {
                     .collect()
             })
             .unwrap_or_default();
+        let conversation = self.conversation;
+        let mut turns = None;
         self.stream = s.packets.streams.lock().ok().and_then(|t| {
             let stream = t.get_stream(index)?;
             let ja4 = match &stream.app_protocol {
@@ -288,9 +301,22 @@ impl Packets {
                         .count()
                 })
                 .unwrap_or(0);
-            Some(model::summarize(&lites, stream, flows))
+            let info = model::summarize(&lites, stream, flows);
+            if conversation {
+                turns = Some(model::conversation(stream, info.client_is_a));
+            }
+            Some(info)
         });
+        self.turns = turns;
         self.stream_key = Some((index, s.observed_at));
+    }
+
+    fn toggle_conversation(&mut self) {
+        self.conversation = !self.conversation;
+        self.conversation_scroll = self.conversation;
+        // Rebuild the stream summary so the conversation is built with it.
+        self.stream_key = None;
+        self.turns = None;
     }
 
     fn select(&mut self, id: u64) {
@@ -298,6 +324,7 @@ impl Packets {
             self.selected = Some(id);
             self.layer = None;
             self.hex_scroll = Some(0);
+            self.conversation_scroll = true;
         }
     }
 
@@ -346,9 +373,21 @@ impl Packets {
         }
     }
 
+    /// Applies `expr` if it parses. An expression that doesn't (a typed
+    /// palette filter, say) is never applied: the crate would treat it as no
+    /// filter and every packet would read as a match. It opens in the field
+    /// instead, with the reason, and the list stays unfiltered.
     fn apply_filter(&mut self, expr: String) {
-        self.applied = expr.trim().to_string();
-        self.draft = self.applied.clone();
+        let expr = expr.trim().to_string();
+        if model::filter_error(&expr).is_some() {
+            self.applied.clear();
+            self.draft = expr;
+            self.editing = true;
+            self.focus_field = true;
+        } else {
+            self.applied = expr;
+            self.draft = self.applied.clone();
+        }
         self.selected = None;
         self.list_key = None;
     }
@@ -519,8 +558,13 @@ impl Screen for Packets {
             hints.push(Hint::new(Key::Esc, "cancel"));
             return hints;
         }
-        if self.stream.is_some() {
+        if self.conversation {
+            hints.push(Hint::ch('s', "decode"));
+            hints.push(Hint::ch('h', if self.hex { "text" } else { "hex" }));
+            hints.push(Hint::glyph(Key::Right, "←→", "direction"));
+        } else if self.stream.is_some() {
             hints.push(Hint::new(Key::Enter, "stream"));
+            hints.push(Hint::ch('s', "conversation"));
         }
         if cx.filter.is_some() {
             hints.push(Hint::new(Key::Esc, "back"));
@@ -607,6 +651,10 @@ impl Screen for Packets {
             Key::Char('w') if focus == 2 => self.export_stream(cx),
             Key::Char('w') => self.export_list(cx),
             Key::Char('h') => self.hex = !self.hex,
+            Key::Char('s') if self.conversation || self.stream.is_some() => {
+                self.toggle_conversation()
+            }
+            Key::Esc if self.conversation => self.toggle_conversation(),
             Key::Char('m') => {
                 let Some(id) = self.selected else {
                     return false;
@@ -684,6 +732,7 @@ impl Screen for Packets {
     fn palette(&self, _cx: &Cx) -> Vec<(String, Key)> {
         vec![
             ("start / stop capture".into(), Key::Char('c')),
+            ("follow stream conversation".into(), Key::Char('s')),
             ("edit display filter".into(), Key::Char('/')),
             ("set bpf capture filter".into(), Key::Char('b')),
             ("export filtered packets as pcap".into(), Key::Char('w')),

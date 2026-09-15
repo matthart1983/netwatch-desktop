@@ -372,8 +372,15 @@ fn dense_groups_cycle_and_fold_from_the_keyboard() {
     // By process: proc10 has a header (2 sockets), proc11 does not.
     h.selection.id = Some((&s.connections[0]).into());
     let t = texts(&mut h);
-    assert!(t.iter().any(|x| x.starts_with("▾ proc10 · PID 10 · 2 sockets")), "{t:?}");
-    assert!(h.dense.fold_key(Key::Space), "space folds the selected socket's group");
+    assert!(
+        t.iter()
+            .any(|x| x.starts_with("▾ proc10 · PID 10 · 2 sockets")),
+        "{t:?}"
+    );
+    assert!(
+        h.dense.fold_key(Key::Space),
+        "space folds the selected socket's group"
+    );
     let t = texts(&mut h);
     assert!(t.iter().any(|x| x.starts_with("▸ proc10")));
     assert_eq!(h.dense.group_cursor.as_deref(), Some("pid:10"));
@@ -393,7 +400,11 @@ fn dense_groups_cycle_and_fold_from_the_keyboard() {
     h.dense.cycle_group();
     assert_eq!(h.dense.group, connections::GroupBy::Host);
     let t = texts(&mut h);
-    assert!(t.iter().any(|x| x.starts_with("▾ 198.51.100.7") && x.contains("proc10 · proc11")), "{t:?}");
+    assert!(
+        t.iter()
+            .any(|x| x.starts_with("▾ 198.51.100.7") && x.contains("proc10 · proc11")),
+        "{t:?}"
+    );
 }
 #[test]
 fn tables_fit_their_panels_at_minimum_size() {

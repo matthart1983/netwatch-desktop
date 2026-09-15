@@ -924,7 +924,11 @@ impl Bars {
 
     fn shade(&self, color: Color32, t: f32) -> Color32 {
         if self.look.fade {
-            lerp(lerp(theme::graph_bg(), color, 0.28), color, t.clamp(0.0, 1.0))
+            lerp(
+                lerp(theme::graph_bg(), color, 0.28),
+                color,
+                t.clamp(0.0, 1.0),
+            )
         } else {
             color
         }
@@ -933,17 +937,34 @@ impl Bars {
     #[allow(clippy::too_many_arguments)]
     /// A vertical bar in the column `x..x+w`, growing `h` points from
     /// `base` (up or down) within an `extent`-point track.
-    pub fn vbar(&mut self, x: f32, w: f32, base: f32, extent: f32, h: f32, color: Color32, up: bool) {
+    pub fn vbar(
+        &mut self,
+        x: f32,
+        w: f32,
+        base: f32,
+        extent: f32,
+        h: f32,
+        color: Color32,
+        up: bool,
+    ) {
         let h = h.clamp(0.0, extent);
         if !self.look.btop {
             if h <= 0.0 {
                 return;
             }
-            let (y0, y1) = if up { (base - h, base) } else { (base, base + h) };
+            let (y0, y1) = if up {
+                (base - h, base)
+            } else {
+                (base, base + h)
+            };
             let far = self.shade(color, h / extent.max(1.0));
             let near = self.shade(color, 0.0);
             let (top, bottom) = if up { (far, near) } else { (near, far) };
-            self.quad(Rect::from_min_max(pos2(x, y0), pos2(x + w, y1)), top, bottom);
+            self.quad(
+                Rect::from_min_max(pos2(x, y0), pos2(x + w, y1)),
+                top,
+                bottom,
+            );
             return;
         }
         let rows = (extent / self.pitch).floor().max(1.0) as usize;
@@ -960,7 +981,11 @@ impl Bars {
                 break;
             }
             let offset = r as f32 * self.pitch;
-            let y = if up { base - offset - self.dot } else { base + offset };
+            let y = if up {
+                base - offset - self.dot
+            } else {
+                base + offset
+            };
             let c = if on {
                 self.shade(color, (r + 1) as f32 / rows as f32)
             } else {
@@ -968,7 +993,11 @@ impl Bars {
             };
             for k in 0..cols {
                 let cx = x + k as f32 * self.pitch;
-                self.quad(Rect::from_min_size(pos2(cx, y), vec2(self.dot, self.dot)), c, c);
+                self.quad(
+                    Rect::from_min_size(pos2(cx, y), vec2(self.dot, self.dot)),
+                    c,
+                    c,
+                );
             }
         }
     }
@@ -996,7 +1025,9 @@ impl Bars {
             return;
         }
         let cols = (track.width() / self.pitch).floor().max(1.0) as usize;
-        let rows = ((track.height() + self.pitch - self.dot) / self.pitch).floor().max(1.0) as usize;
+        let rows = ((track.height() + self.pitch - self.dot) / self.pitch)
+            .floor()
+            .max(1.0) as usize;
         let lit = ((fraction * cols as f32).ceil() as usize).min(cols);
         let ghost = lerp(theme::graph_bg(), color, 0.10);
         for k in 0..cols {
@@ -1009,7 +1040,10 @@ impl Bars {
             for r in 0..rows {
                 let y = track.top() + r as f32 * self.pitch;
                 self.quad(
-                    Rect::from_min_size(pos2(track.left() + k as f32 * self.pitch, y), vec2(self.dot, self.dot)),
+                    Rect::from_min_size(
+                        pos2(track.left() + k as f32 * self.pitch, y),
+                        vec2(self.dot, self.dot),
+                    ),
                     c,
                     c,
                 );
@@ -1020,7 +1054,11 @@ impl Bars {
     /// A missing sample: a baseline tick, never a bar.
     pub fn gap(&mut self, x: f32, w: f32, base: f32) {
         let c = theme::border();
-        self.quad(Rect::from_min_max(pos2(x, base - 1.0), pos2(x + w, base)), c, c);
+        self.quad(
+            Rect::from_min_max(pos2(x, base - 1.0), pos2(x + w, base)),
+            c,
+            c,
+        );
     }
 
     pub fn finish(self, ui: &Ui) {
@@ -1246,30 +1284,62 @@ mod bar_tests {
                 let clip = Rect::from_min_size(pos2(0.0, 0.0), vec2(30.0, 30.0));
                 let mut bars = Bars::new(ui, clip);
                 bars.vbar(0.0, 5.0, 30.0, 30.0, h, theme::rx(), true);
-                out = (bars.quads, bars.mesh.vertices.iter().map(|v| v.color).collect());
+                out = (
+                    bars.quads,
+                    bars.mesh.vertices.iter().map(|v| v.color).collect(),
+                );
             });
         });
-        theme::set_graphs(theme::GraphLook { btop: true, fade: true });
+        theme::set_graphs(theme::GraphLook {
+            btop: true,
+            fade: true,
+        });
         out
     }
     #[test]
     fn btop_draws_dot_cells_with_capacity_and_bars_draw_one_solid_quad() {
-        let (btop, _) = quads(theme::GraphLook { btop: true, fade: true }, 15.0);
+        let (btop, _) = quads(
+            theme::GraphLook {
+                btop: true,
+                fade: true,
+            },
+            15.0,
+        );
         // 10 rows × 2 dot columns of capacity, every cell a quad.
         assert_eq!(btop, 20);
-        let (bars, colors) = quads(theme::GraphLook { btop: false, fade: true }, 15.0);
+        let (bars, colors) = quads(
+            theme::GraphLook {
+                btop: false,
+                fade: true,
+            },
+            15.0,
+        );
         assert_eq!(bars, 1);
         assert_ne!(colors[0], colors[3], "fade runs baseline → top");
-        let (_, flat) = quads(theme::GraphLook { btop: false, fade: false }, 15.0);
+        let (_, flat) = quads(
+            theme::GraphLook {
+                btop: false,
+                fade: false,
+            },
+            15.0,
+        );
         assert!(flat.iter().all(|c| *c == theme::rx()));
-        let (empty, _) = quads(theme::GraphLook { btop: false, fade: true }, 0.0);
+        let (empty, _) = quads(
+            theme::GraphLook {
+                btop: false,
+                fade: true,
+            },
+            0.0,
+        );
         assert_eq!(empty, 0, "no bar for a zero in bars mode");
     }
     #[test]
     fn config_names_map_to_the_graph_look() {
         assert!(theme::GraphLook::from_config("dots", true).btop);
         assert!(!theme::GraphLook::from_config("bars", false).btop);
-        assert_eq!(theme::GraphLook::from_config("bars", false).style_name(), "bars");
+        assert_eq!(
+            theme::GraphLook::from_config("bars", false).style_name(),
+            "bars"
+        );
     }
 }
-

@@ -567,7 +567,10 @@ pub fn filter_expression(filter: &crate::shell::Filter) -> Option<String> {
                 format!("host:{addr}{port} or sni:{addr}{port}")
             })
         }
-        Filter::Process { .. } | Filter::Iface(_) => None,
+        Filter::At {
+            host: Some(host), ..
+        } => filter_expression(&Filter::Host(host.clone())),
+        Filter::Process { .. } | Filter::Iface(_) | Filter::At { host: None, .. } => None,
     }
 }
 
@@ -780,6 +783,109 @@ pub fn stream_prose(info: &StreamInfo, baseline_ms: Option<f64>) -> String {
         (Some(first), _) => format!("{lead}; first response {} after its request.", ms(*first)),
         _ => format!("{lead}; no request/response exchange in the ring yet."),
     }
+}
+
+/// One segment of a stream's conversation, oriented client → server.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Turn {
+    pub packet_id: u64,
+    pub from_client: bool,
+    pub decrypted: bool,
+    pub len: usize,
+    /// Printable text: UTF-8 where it decodes, `·` for other bytes.
+    pub text: String,
+    /// 16-byte hex rows with an ASCII column.
+    pub hex: String,
+}
+
+/// A stream's payload in order, as the TUI's stream view reads it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Conversation {
+    pub turns: Vec<Turn>,
+    /// Raw (handshake or undecrypted) segments left out because some of the
+    /// stream decrypted; the plaintext is the conversation.
+    pub raw_hidden: usize,
+    /// Segments past [`CONVERSATION_BYTES`] that aren't shown.
+    pub truncated: usize,
+}
+
+/// Payload bytes the conversation view keeps, so a bulk download doesn't
+/// turn into megabytes of text laid out every frame.
+pub const CONVERSATION_BYTES: usize = 256 * 1024;
+
+/// The stream's segments with payload, decrypted-only when any segment
+/// decrypted (like the TUI), oriented so `from_client` follows the
+/// initiator rather than the tracker's key order.
+pub fn conversation(stream: &Stream, client_is_a: bool) -> Conversation {
+    use netwatch::collectors::packets::StreamDirection;
+    let any_decrypted = stream.segments.iter().any(|s| s.decrypted.is_some());
+    let mut out = Conversation::default();
+    let mut kept = 0usize;
+    for seg in &stream.segments {
+        if any_decrypted && seg.decrypted.is_none() {
+            out.raw_hidden += 1;
+            continue;
+        }
+        let bytes = seg.decrypted.as_deref().unwrap_or(&seg.payload);
+        if bytes.is_empty() {
+            continue;
+        }
+        if kept >= CONVERSATION_BYTES {
+            out.truncated += 1;
+            continue;
+        }
+        kept += bytes.len();
+        out.turns.push(Turn {
+            packet_id: seg.packet_id,
+            from_client: (seg.direction == StreamDirection::AtoB) == client_is_a,
+            decrypted: seg.decrypted.is_some(),
+            len: bytes.len(),
+            text: printable(bytes),
+            hex: hex_rows(bytes),
+        });
+    }
+    out
+}
+
+/// Text for a payload: valid UTF-8 kept (so HTTP, JSON and SMTP read as
+/// written), line breaks kept, every other control or invalid byte `·`.
+pub fn printable(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' if chars.peek() == Some(&'\n') => {}
+            '\n' | '\t' => out.push(c),
+            '\r' => out.push('\n'),
+            '\u{FFFD}' => out.push('·'),
+            c if c.is_control() => out.push('·'),
+            c => out.push(c),
+        }
+    }
+    out.trim_end_matches('\n').to_string()
+}
+
+pub fn hex_rows(bytes: &[u8]) -> String {
+    bytes
+        .chunks(16)
+        .enumerate()
+        .map(|(row, chunk)| {
+            let hex: String = chunk.iter().map(|b| format!("{b:02x} ")).collect();
+            let ascii: String = chunk
+                .iter()
+                .map(|&b| {
+                    if b.is_ascii_graphic() || b == b' ' {
+                        b as char
+                    } else {
+                        '.'
+                    }
+                })
+                .collect();
+            format!("{:04x}  {hex:<48} {ascii}", row * 16)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -1004,5 +1110,46 @@ pub mod tests {
         assert!(prose.starts_with("tcp handshake"), "{prose}");
         assert!(prose.contains("2 exchanges"));
         assert_eq!(percentile(&[1.0, 2.0, 3.0, 4.0, 100.0], 0.5), Some(3.0));
+    }
+
+    #[test]
+    fn conversation_text_and_hex() {
+        assert_eq!(printable(b"a\r\nb\rc\x00\xff"), "a\nb\nc··");
+        assert_eq!(
+            hex_rows(b"GET /"),
+            "0000  47 45 54 20 2f                                   GET /"
+        );
+        let mut stream = Stream::new(
+            1,
+            netwatch::collectors::packets::StreamKey::new(
+                StreamProtocol::Tcp,
+                "10.0.0.9",
+                443,
+                "10.0.0.2",
+                5000,
+            ),
+            0,
+        );
+        let big = vec![b'x'; CONVERSATION_BYTES];
+        for (id, dir) in [
+            (1, netwatch::collectors::packets::StreamDirection::AtoB),
+            (2, netwatch::collectors::packets::StreamDirection::BtoA),
+        ] {
+            stream
+                .segments
+                .push(netwatch::collectors::packets::StreamSegment {
+                    packet_id: id,
+                    timestamp: String::new(),
+                    direction: dir,
+                    payload: big.clone(),
+                    decrypted: None,
+                });
+        }
+        // Key a is the server here, so a → b is server → client.
+        let conv = conversation(&stream, false);
+        assert_eq!(conv.turns.len(), 1);
+        assert!(!conv.turns[0].from_client);
+        assert_eq!(conv.truncated, 1);
+        assert_eq!(conv.raw_hidden, 0);
     }
 }

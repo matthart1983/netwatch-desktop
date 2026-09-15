@@ -932,7 +932,7 @@ impl Screen for Dashboard {
     }
 
     fn inspector(&mut self, ui: &mut Ui, cx: &mut Cx) {
-        let conn = conns::selected(cx).cloned();
+        let conn = conns::selected(cx);
         let ip = conn.as_ref().and_then(model::remote_ip);
         let mut actions = Vec::new();
         if let Some(c) = &conn {
@@ -974,7 +974,7 @@ impl Screen for Dashboard {
     }
 
     fn key(&mut self, key: Key, cx: &mut Cx) -> bool {
-        let conn = conns::selected(cx).cloned();
+        let conn = conns::selected(cx);
         match key {
             Key::Up => {
                 cx.shared.connection.movement -= 1;

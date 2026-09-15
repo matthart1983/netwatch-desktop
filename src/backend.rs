@@ -958,7 +958,14 @@ fn run_command(app: &mut App, command: Command) -> Result<String, String> {
         Command::SaveConfig(config) => {
             let mut config = *config;
             config.validate();
+            let ai_changed = ai_settings_changed(&app.user_config, &config);
             app.user_config = config;
+            // Like the TUI: a changed AI row replaces the running collector,
+            // so turning insights off stops summaries leaving the machine and
+            // a new endpoint or model takes effect without a restart.
+            if ai_changed {
+                app.insights_collector = insights_collector_for(&app.user_config);
+            }
             app.ui.show_geo = app.user_config.show_geo;
             app.ui.packet_follow = app.user_config.packet_follow;
             app.ui.timeline_window = app.user_config.timeline_window_enum();
@@ -974,6 +981,28 @@ fn run_command(app: &mut App, command: Command) -> Result<String, String> {
             }
         }
     }
+}
+
+fn ai_settings_changed(old: &NetwatchConfig, new: &NetwatchConfig) -> bool {
+    old.insights_enabled != new.insights_enabled
+        || old.insights_model != new.insights_model
+        || old.insights_endpoint != new.insights_endpoint
+}
+
+/// A started collector for `config`, or `None` when insights are off.
+/// Dropping the previous collector closes its channel, which ends its worker.
+fn insights_collector_for(
+    config: &NetwatchConfig,
+) -> Option<netwatch::collectors::insights::InsightsCollector> {
+    if !config.insights_enabled {
+        return None;
+    }
+    let mut collector = netwatch::collectors::insights::InsightsCollector::new(
+        &config.insights_model,
+        &config.insights_endpoint,
+    );
+    collector.start();
+    Some(collector)
 }
 
 /// Mirrors the TUI: demo sessions simulate the key-bound fix; live sessions
@@ -1057,5 +1086,29 @@ pub(crate) mod tests {
         h.dns_rtt_ms = Some(2000.0);
         h.dns_loss_pct = 0.0;
         assert_eq!(s.health_color("dns"), crate::theme::text());
+    }
+    #[test]
+    fn ai_rows_rebuild_or_drop_the_collector() {
+        let old = NetwatchConfig {
+            insights_enabled: true,
+            ..NetwatchConfig::default()
+        };
+        let off = NetwatchConfig {
+            insights_enabled: false,
+            ..old.clone()
+        };
+        let moved = NetwatchConfig {
+            insights_endpoint: "http://10.0.0.9:11434".into(),
+            ..old.clone()
+        };
+        let unrelated = NetwatchConfig {
+            show_geo: !old.show_geo,
+            ..old.clone()
+        };
+        assert!(ai_settings_changed(&old, &off));
+        assert!(ai_settings_changed(&old, &moved));
+        assert!(!ai_settings_changed(&old, &unrelated));
+        assert!(insights_collector_for(&off).is_none());
+        assert!(insights_collector_for(&moved).is_some());
     }
 }

@@ -169,6 +169,51 @@ fn keys_move_fold_filter_and_promote() {
 }
 
 #[test]
+fn destination_keys_act_on_the_selected_row() {
+    let s = Snapshot::empty();
+    let mut screen = populated();
+    let mut h = Harness::new();
+
+    // ↵ on a destination opens its packets and never writes the policy.
+    screen.selected = Some(Sel::Dest("curl".into(), "api.github.com".into(), 443));
+    assert!(screen.key(Key::Enter, &mut h.cx(&s, None)));
+    assert!(h.commands.is_empty(), "{:?}", h.commands);
+    assert!(matches!(
+        h.nav.last(),
+        Some(Nav::Drill {
+            tab: Tab::Packets,
+            ..
+        })
+    ));
+    assert_eq!(screen.hints(&h.cx(&s, None))[1].label, "packets");
+
+    // An admitted destination offers no allow, so `a` does nothing, rather
+    // than allowing node's unrelated drift.
+    assert!(!screen.key(Key::Char('a'), &mut h.cx(&s, None)));
+    assert!(!screen.key(Key::Char('d'), &mut h.cx(&s, None)));
+    assert!(h.commands.is_empty(), "{:?}", h.commands);
+    assert!(screen.status(&h.cx(&s, None)).unwrap().keys.is_empty());
+
+    // An unruled destination: `a` allows exactly that row.
+    screen.selected = Some(Sel::Dest(
+        "firefox".into(),
+        "www.cloudflare.com".into(),
+        443,
+    ));
+    assert!(screen.key(Key::Char('a'), &mut h.cx(&s, None)));
+    assert!(matches!(
+        h.commands.last(),
+        Some(Command::EgressAllow { process, .. }) if process == "firefox"
+    ));
+    // Not a drift, so there's nothing to keep warning about.
+    assert!(!screen.key(Key::Char('d'), &mut h.cx(&s, None)));
+
+    // `w` still promotes the selected row's process.
+    assert!(screen.key(Key::Char('w'), &mut h.cx(&s, None)));
+    assert!(matches!(h.commands.last(), Some(Command::EgressPromote(p)) if p == "firefox"));
+}
+
+#[test]
 fn process_filter_and_packets_drill() {
     let s = Snapshot::empty();
     let filter = Filter::Process {

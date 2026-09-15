@@ -82,6 +82,9 @@ pub struct DesktopApp {
     focus: usize,
     frozen: Option<Arc<Snapshot>>,
     toggle_freeze: bool,
+    /// Tab presses taken out of egui's input before its focus pass (see
+    /// `raw_input_hook`), delivered as shell keys instead.
+    tab_presses: usize,
     view: View,
     pub dense: crate::dense::Dense,
     lite: crate::lite::Lite,
@@ -167,6 +170,7 @@ impl DesktopApp {
             focus: 0,
             frozen: None,
             toggle_freeze: false,
+            tab_presses: 0,
             view: options.view.unwrap_or_else(|| View::from_name(&prefs.view)),
             dense,
             lite: Default::default(),
@@ -308,10 +312,10 @@ impl DesktopApp {
     /// Keyboard input for this frame as shell keys. Text events carry
     /// characters (case and punctuation preserved); key events carry the
     /// rest. Returns (keys, palette requested via ⌘K / ctrl-K).
-    fn collect_keys(ctx: &egui::Context) -> (Vec<Key>, bool) {
+    fn collect_keys(ctx: &egui::Context, tab_presses: usize) -> (Vec<Key>, bool) {
         let typing = ctx.wants_keyboard_input();
         ctx.input(|i| {
-            let mut keys = Vec::new();
+            let mut keys = vec![Key::Tab; tab_presses];
             let mut palette = false;
             for event in &i.events {
                 match event {
@@ -339,7 +343,6 @@ impl DesktopApp {
                             egui::Key::ArrowLeft if !typing => Some(Key::Left),
                             egui::Key::ArrowRight if !typing => Some(Key::Right),
                             egui::Key::Space if !typing => Some(Key::Space),
-                            egui::Key::Tab => Some(Key::Tab),
                             egui::Key::PageUp => Some(Key::PageUp),
                             egui::Key::PageDown => Some(Key::PageDown),
                             egui::Key::Home if !typing => Some(Key::Home),
@@ -859,6 +862,15 @@ impl DesktopApp {
 }
 
 impl eframe::App for DesktopApp {
+    /// egui moves keyboard focus to the next clickable widget on Tab. Every
+    /// hint, row and chip is focusable, and a focused widget makes the shell
+    /// treat input as typing, which silenced every one-key shortcut after a
+    /// single Tab. The shell owns Tab (panel focus, palette completion), so
+    /// take it out before egui sees it.
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.tab_presses += take_tab_presses(&mut raw_input.events);
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self.theme_applied != Some(theme::current().name) {
             if self.theme_applied.is_none() {
@@ -928,7 +940,7 @@ impl eframe::App for DesktopApp {
         }
 
         if !self.capture.active() {
-            let (keys, palette) = Self::collect_keys(ctx);
+            let (keys, palette) = Self::collect_keys(ctx, std::mem::take(&mut self.tab_presses));
             if palette && self.sheet.is_none() {
                 self.open_sheet("palette", snapshot.as_deref());
             }
@@ -1814,6 +1826,25 @@ impl DesktopApp {
     }
 }
 
+/// Removes Tab key events (presses and releases) from `events` and returns
+/// how many presses there were.
+fn take_tab_presses(events: &mut Vec<egui::Event>) -> usize {
+    let mut presses = 0;
+    events.retain(|event| match event {
+        egui::Event::Key {
+            key: egui::Key::Tab,
+            pressed,
+            modifiers,
+            ..
+        } if !modifiers.command && !modifiers.alt => {
+            presses += usize::from(*pressed);
+            false
+        }
+        _ => true,
+    });
+    presses
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1870,6 +1901,45 @@ mod tests {
             crate::graphs::Scale::Range(123456)
         );
         assert_eq!(app.shared.connection.id, selected);
+    }
+    #[test]
+    fn tab_never_hands_egui_focus_to_a_clickable_widget() {
+        let tab = || egui::Event::Key {
+            key: egui::Key::Tab,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        };
+        let focused_after = |strip: bool| {
+            let ctx = egui::Context::default();
+            let frame = |ctx: &egui::Context, events: Vec<egui::Event>| {
+                let _ = ctx.run(
+                    egui::RawInput {
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            ui.allocate_response(vec2(40.0, 20.0), egui::Sense::click());
+                        });
+                    },
+                );
+            };
+            frame(&ctx, Vec::new());
+            let mut events = vec![tab()];
+            if strip {
+                assert_eq!(take_tab_presses(&mut events), 1);
+                assert!(events.is_empty());
+            }
+            frame(&ctx, events);
+            frame(&ctx, Vec::new());
+            ctx.wants_keyboard_input()
+        };
+        // egui on its own focuses the hint-like widget, which used to make
+        // the shell drop every letter and digit as "typing".
+        assert!(focused_after(false));
+        assert!(!focused_after(true));
     }
     #[test]
     fn view_cycles_full_lite_dense_full() {
@@ -1959,7 +2029,9 @@ mod tests {
         s.config = Arc::new(config.clone());
         app.sync_graphs(&s);
         assert!(theme::graphs().btop);
-        let _ = ctx.run(Default::default(), |ctx| app.apply_nav(ctx, Nav::ToggleBtop, Some(&s)));
+        let _ = ctx.run(Default::default(), |ctx| {
+            app.apply_nav(ctx, Nav::ToggleBtop, Some(&s))
+        });
         assert!(!theme::graphs().btop, "applies before the save lands");
         app.sync_graphs(&s);
         assert!(!theme::graphs().btop, "a stale snapshot does not revert it");

@@ -575,9 +575,18 @@ impl Dense {
         // one socket needs no header: its row already names the process.
         // Folded groups keep their header; their sockets leave the
         // selectable rows so arrows skip them, but the header stays reachable.
-        let has_header = |g: &connections::ProcessGroup| !g.plain && (g.listeners || g.sockets.len() > 1);
-        self.group_keys = groups.iter().filter(|g| has_header(g)).map(|g| g.key.clone()).collect();
-        if self.group_cursor.as_ref().is_some_and(|k| !self.group_keys.contains(k)) {
+        let has_header =
+            |g: &connections::ProcessGroup| !g.plain && (g.listeners || g.sockets.len() > 1);
+        self.group_keys = groups
+            .iter()
+            .filter(|g| has_header(g))
+            .map(|g| g.key.clone())
+            .collect();
+        if self
+            .group_cursor
+            .as_ref()
+            .is_some_and(|k| !self.group_keys.contains(k))
+        {
             self.group_cursor = None;
         }
         let mut display = Vec::with_capacity(rows.len() + groups.len());
@@ -611,7 +620,10 @@ impl Dense {
                         .position(|(h, i)| !*h && ConnectionId::from(&rows[*i]) == *id)
                 });
             let target = current
-                .map(|p| p.saturating_add_signed(selection.movement).min(display.len() - 1))
+                .map(|p| {
+                    p.saturating_add_signed(selection.movement)
+                        .min(display.len() - 1)
+                })
                 .unwrap_or(0);
             let (header, index) = display[target];
             if header {
@@ -627,11 +639,14 @@ impl Dense {
             .group_cursor
             .as_ref()
             .and_then(|k| display.iter().position(|(h, i)| *h && groups[*i].key == *k));
-        let selectable: Vec<netwatch::collectors::connections::Connection> = visible.iter().map(|i| rows[*i].clone()).collect();
+        let selectable: Vec<netwatch::collectors::connections::Connection> =
+            visible.iter().map(|i| rows[*i].clone()).collect();
         let selected = selection.resolve(&selectable).map(|n| visible[n]);
         self.cursor_group = match &self.group_cursor {
             Some(k) => Some(k.clone()),
-            None => selected.and_then(|i| group_of[i]).map(|g| groups[g].key.clone()),
+            None => selected
+                .and_then(|i| group_of[i])
+                .map(|g| groups[g].key.clone()),
         };
         let moved = std::mem::take(&mut self.scroll_to_cursor);
 

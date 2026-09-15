@@ -52,6 +52,8 @@ pub(crate) fn issue(rule: &str, subject: Subject) -> Issue {
         consequences: vec![],
         suppressed_by: None,
         recurrence: 0,
+        tests: vec![],
+        verification: None,
     }
 }
 
@@ -427,7 +429,11 @@ fn keys_cycle_controls_and_drill_with_the_socket() {
     assert!(consumed);
     assert_eq!(screen.sort, Sort::Process);
     assert!(!screen.descending);
-    assert_eq!(screen.group, Group::Process, "grouped by process by default");
+    assert_eq!(
+        screen.group,
+        Group::Process,
+        "grouped by process by default"
+    );
     with_cx(&s, &mut shared, None, |cx| screen.key(Key::Char('g'), cx));
     assert_eq!(screen.group, Group::None);
     with_cx(&s, &mut shared, None, |cx| screen.key(Key::Char('v'), cx));
@@ -466,14 +472,19 @@ fn process_groups_fold_from_the_keyboard_and_headers_are_selectable() {
     let ncat = s.connections.iter().find(|c| c.pid == Some(473)).unwrap();
     shared.connection.id = Some(ncat.into());
     let key_of = |screen: &Connections, shared: &mut Shared| {
-        with_cx(&s, shared, None, |cx| selected_row_group(cx, &screen.view(cx), Group::Process)).0
+        with_cx(&s, shared, None, |cx| {
+            selected_row_group(cx, &screen.view(cx), Group::Process)
+        })
+        .0
     };
     let group = key_of(&screen, &mut shared).expect("ncat is in a process group");
     let collapsed = |screen: &Connections, shared: &mut Shared, key: &str| {
         with_cx(&s, shared, None, |cx| {
-            screen.view(cx).lines.iter().any(
-                |l| matches!(l, Line::Group { key: k, collapsed: true, .. } if k == key),
-            )
+            screen
+                .view(cx)
+                .lines
+                .iter()
+                .any(|l| matches!(l, Line::Group { key: k, collapsed: true, .. } if k == key))
         })
         .0
     };
@@ -533,9 +544,13 @@ fn process_groups_fold_from_the_keyboard_and_headers_are_selectable() {
     with_cx(&s, &mut shared, None, |cx| screen.apply_movement(cx, &view));
     assert_eq!(screen.group_cursor.as_deref(), Some(first_header.as_str()));
     let texts = render(&mut screen, &s, &mut shared, egui::vec2(1400.0, 800.0));
-    assert!(texts.iter().any(|t| t.starts_with("▾ ") || t.starts_with("▸ ")));
+    assert!(texts
+        .iter()
+        .any(|t| t.starts_with("▾ ") || t.starts_with("▸ ")));
     assert!(
-        texts.iter().any(|t| t.contains("ncat 473 · 1 socket") && t.contains("bufferbloat")),
+        texts
+            .iter()
+            .any(|t| t.contains("ncat 473 · 1 socket") && t.contains("bufferbloat")),
         "headers summarise the group: {texts:?}"
     );
 }
@@ -543,7 +558,10 @@ fn process_groups_fold_from_the_keyboard_and_headers_are_selectable() {
 #[test]
 fn slash_filter_edits_and_esc_clears() {
     let s = fixture();
-    let mut screen = Connections::default();
+    let mut screen = Connections {
+        group: Group::None,
+        ..Default::default()
+    };
     let mut shared = Shared::default();
     with_cx(&s, &mut shared, None, |cx| screen.key(Key::Char('/'), cx));
     assert!(screen.filter_editing);
@@ -563,7 +581,10 @@ fn slash_filter_edits_and_esc_clears() {
 #[test]
 fn view_folds_listeners_unless_expanded_and_honours_navigator_filter() {
     let s = fixture();
-    let mut screen = Connections::default();
+    let mut screen = Connections {
+        group: Group::None,
+        ..Default::default()
+    };
     let mut shared = Shared::default();
     let (view, _) = with_cx(&s, &mut shared, None, |cx| screen.view(cx));
     assert_eq!(view.lines.len(), 5);
@@ -641,11 +662,152 @@ fn renders_empty_and_populated_snapshots() {
         "reasoning paragraph"
     );
     // Narrow windows still render the verdict.
-    let texts = render(
-        &mut ungrouped(),
-        &s,
-        &mut shared,
-        egui::vec2(1026.0, 626.0),
-    );
+    let texts = render(&mut ungrouped(), &s, &mut shared, egui::vec2(1026.0, 626.0));
     assert!(texts.iter().any(|t| t == "bufferbloat"));
+}
+
+#[test]
+fn a_timeline_moment_shows_the_sockets_open_then() {
+    use netwatch::collectors::connections::{ConnectionKey, TrackedConnection};
+    let mut s = fixture();
+    let now = s.observed_at;
+    let mut tracked = (*s.tracked).clone();
+    // Opened 100 s ago, closed 50 s ago.
+    tracked.push(TrackedConnection {
+        key: ConnectionKey {
+            protocol: "TCP".into(),
+            local_addr: "10.0.0.2:51000".into(),
+            remote_addr: "93.184.216.34:443".into(),
+            pid: Some(900),
+        },
+        process_name: Some("curl".into()),
+        state: "ESTABLISHED".into(),
+        first_seen: now - Duration::from_secs(100),
+        last_seen: now - Duration::from_secs(50),
+        is_active: false,
+    });
+    // Opened 10 s ago: not open at the moment below.
+    tracked.push(TrackedConnection {
+        key: ConnectionKey {
+            protocol: "TCP".into(),
+            local_addr: "10.0.0.2:52000".into(),
+            remote_addr: "93.184.216.35:443".into(),
+            pid: Some(901),
+        },
+        process_name: Some("wget".into()),
+        state: "ESTABLISHED".into(),
+        first_seen: now - Duration::from_secs(10),
+        last_seen: now,
+        is_active: false,
+    });
+    s.tracked = Arc::new(tracked);
+
+    let at = now - Duration::from_secs(60);
+    let open = model::open_at(&s, at);
+    assert_eq!((open.still_open, open.closed), (1, 1));
+    let closed = open.connections.last().unwrap();
+    assert_eq!(closed.state, model::CLOSED);
+    assert_eq!(closed.process_name.as_deref(), Some("curl"));
+    assert_eq!(closed.rx_rate, None);
+
+    let filter = Filter::At {
+        at,
+        clock: "18:51:02".into(),
+        host: None,
+    };
+    let screen = Connections {
+        group: Group::None,
+        expanded: true,
+        ..Default::default()
+    };
+    let mut shared = Shared::default();
+    let (view, _) = with_cx(&s, &mut shared, Some(&filter), |cx| screen.view(cx));
+    let mut processes: Vec<&str> = view.rows.iter().map(|r| r.process.as_str()).collect();
+    processes.sort();
+    assert_eq!(processes, ["curl", "ncat"]);
+
+    // A closed socket can still be selected and inspected.
+    shared.connection.id = Some(closed.into());
+    let (conn, _) = with_cx(&s, &mut shared, Some(&filter), |cx| selected(cx));
+    assert_eq!(conn.unwrap().state, model::CLOSED);
+    // Without the moment, it's gone.
+    let (conn, _) = with_cx(&s, &mut shared, None, |cx| selected(cx));
+    assert!(conn.is_none());
+
+    let (strip, _) = with_cx(&s, &mut shared, Some(&filter), |cx| screen.status(cx));
+    let strip = strip.unwrap();
+    assert_eq!(strip.word, "@18:51:02");
+    assert!(strip.sentence.contains("1 still open · 1 closed since"));
+    assert_eq!(filter.label(), "@18:51:02");
+}
+
+#[test]
+fn folded_by_default_still_opens_the_groups_that_matter() {
+    let mut s = fixture();
+    let mut config = (*s.config).clone();
+    config.groups_start_collapsed = true;
+    s.config = Arc::new(config);
+    let screen = Connections::default();
+    assert_eq!(screen.group, Group::Process);
+    let mut shared = Shared::default();
+    let states = |screen: &Connections, shared: &mut Shared, filter: Option<&Filter>| {
+        with_cx(&s, shared, filter, |cx| {
+            let view = screen.view(cx);
+            view.lines
+                .iter()
+                .filter_map(|l| match l {
+                    Line::Group { key, collapsed, .. } => Some((key.clone(), *collapsed)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .0
+    };
+    let groups = states(&screen, &mut shared, None);
+    let with_verdict: HashSet<String> = with_cx(&s, &mut shared, None, |cx| {
+        screen
+            .view(cx)
+            .rows
+            .iter()
+            .filter(|r| r.verdict.concern > 0)
+            .map(|r| screen.group.key(r))
+            .collect()
+    })
+    .0;
+    assert!(!with_verdict.is_empty(), "fixture has a concern");
+    // Nothing selected yet, so the top group opens too.
+    for (i, (key, collapsed)) in groups.iter().enumerate() {
+        assert_eq!(*collapsed, i > 0 && !with_verdict.contains(key), "{key}");
+    }
+
+    // The selected socket's group opens too, so a drill lands on a visible row.
+    let (quiet_key, _) = groups.iter().skip(1).find(|(_, c)| *c).cloned().unwrap();
+    let quiet = with_cx(&s, &mut shared, None, |cx| {
+        screen
+            .view(cx)
+            .rows
+            .iter()
+            .find(|r| screen.group.key(r) == quiet_key)
+            .map(|r| r.id.clone())
+    })
+    .0
+    .unwrap();
+    shared.connection.id = Some(quiet);
+    assert!(states(&screen, &mut shared, None)
+        .iter()
+        .any(|(k, c)| *k == quiet_key && !c));
+
+    // A drilled view opens everything; an explicit fold still wins.
+    let filter = Filter::Process {
+        name: "ncat".into(),
+        pid: None,
+    };
+    assert!(states(&screen, &mut shared, Some(&filter))
+        .iter()
+        .all(|(_, c)| !c));
+    let mut screen = screen;
+    screen.set_collapsed(&quiet_key, true);
+    assert!(states(&screen, &mut shared, None)
+        .iter()
+        .any(|(k, c)| *k == quiet_key && *c));
 }

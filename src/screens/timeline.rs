@@ -98,10 +98,15 @@ impl Timeline {
     fn drill(&self, cx: &mut Cx, f: &Frame, event: Option<&Event>) {
         let at = event.map(|e| e.at).or(cx.shared.cursor).unwrap_or(f.end);
         cx.shared.cursor = Some(at);
+        let filter = Filter::At {
+            at,
+            clock: f.clock.hms(at),
+            host: event.and_then(|e| e.host.clone()),
+        };
         cx.go(Nav::Drill {
             tab: Tab::Connections,
-            crumb: format!("@{}", f.clock.hms(at)),
-            filter: event.and_then(|e| e.host.clone()).map(Filter::Host),
+            crumb: filter.label(),
+            filter: Some(filter),
         });
     }
 

@@ -2,7 +2,7 @@
 //! decode tree, hex, stream inspector, navigator groups and the inline
 //! permissions card.
 use super::decode::Kind;
-use super::model::{self, Narrow, Sev};
+use super::model::{self, Conversation, Narrow, Sev};
 use super::{Direction, Packets};
 use crate::screens::{compact_count, nav_heading, nav_row};
 use crate::shell::{Cx, Hint, Key};
@@ -215,6 +215,10 @@ impl Packets {
         self.list_panel(ui, cx, list);
         let bottom = Rect::from_min_max(pos2(content.left(), list.bottom() + GAP), content.max);
         if bottom.height() < 60.0 {
+            return;
+        }
+        if self.conversation {
+            self.conversation_panel(ui, cx, bottom);
             return;
         }
         let decode_w = ((bottom.width() - GAP) * 0.45).floor();
@@ -817,6 +821,182 @@ impl Packets {
         );
         if toggle {
             self.hex = !self.hex;
+        }
+        let _ = cx;
+    }
+
+    // ------------------------------------------------------------ conversation
+
+    /// `s`: the selected stream's payload in order, one block per segment,
+    /// client → server and server → client, decrypted-only when any of it
+    /// decrypted. Replaces decode and hex; the list above still picks the
+    /// stream, and clicking a block selects its packet.
+    fn conversation_panel(&mut self, ui: &mut Ui, cx: &mut Cx, rect: Rect) {
+        let Some(info) = self.stream.clone() else {
+            panel_rect(
+                ui,
+                rect,
+                PanelHead::new("conversation"),
+                |ui| {
+                    if ui_kit::key_hint(ui, &Hint::ch('s', "decode")) {
+                        self.toggle_conversation();
+                    }
+                },
+                |ui| {
+                    ui.label(ui_kit::label(
+                        "select a packet that belongs to a stream in 1",
+                    ))
+                },
+            );
+            return;
+        };
+        let empty = Conversation::default();
+        let conv = self.turns.as_ref().unwrap_or(&empty);
+        let shown: Vec<&model::Turn> = conv
+            .turns
+            .iter()
+            .filter(|t| match self.direction {
+                Direction::Both => true,
+                Direction::AtoB => t.from_client,
+                Direction::BtoA => !t.from_client,
+            })
+            .collect();
+        let client = format!("{}:{}", info.client.0, info.client.1);
+        let server = format!("{}:{}", info.server.0, info.server.1);
+        let bytes: usize = shown.iter().map(|t| t.len).sum();
+        let mut meta = vec![
+            format!("{} segments", thousands(shown.len())),
+            crate::format::bytes_total(bytes as u64),
+            match self.direction {
+                Direction::Both => "both ways".to_string(),
+                Direction::AtoB => "client → server".to_string(),
+                Direction::BtoA => "server → client".to_string(),
+            },
+        ];
+        if conv.raw_hidden > 0 {
+            meta.push(format!("decrypted only · {} raw hidden", conv.raw_hidden));
+        } else if info.app.is_some() && !info.decrypted && conv.turns.iter().all(|t| !t.decrypted) {
+            meta.push("encrypted · set a keylog in settings to read it".into());
+        }
+        if conv.truncated > 0 {
+            meta.push(format!(
+                "first {} KB · {} more segments",
+                model::CONVERSATION_BYTES / 1024,
+                conv.truncated
+            ));
+        }
+        let mut toggle_hex = false;
+        let mut close = false;
+        let mut clicked: Option<u64> = None;
+        let scroll = std::mem::take(&mut self.conversation_scroll);
+        let selected = self.selected;
+        let hex = self.hex;
+        panel_rect(
+            ui,
+            rect,
+            PanelHead::new(&format!("stream #{} · conversation", info.index))
+                .meta(&meta.join(" · ")),
+            |ui| {
+                if ui_kit::key_hint(ui, &Hint::ch('s', "decode")) {
+                    close = true;
+                }
+                if ui_kit::key_hint(ui, &Hint::ch('h', if hex { "text" } else { "hex" })) {
+                    toggle_hex = true;
+                }
+            },
+            |ui| {
+                if shown.is_empty() {
+                    ui.label(ui_kit::label(if conv.turns.is_empty() {
+                        "no payload in this stream yet · handshakes and acks carry none"
+                    } else {
+                        "no payload in this direction · ←→ changes it"
+                    }));
+                    return;
+                }
+                egui::ScrollArea::vertical()
+                    .id_source("packets_conversation")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        for turn in &shown {
+                            let is_selected = selected == Some(turn.packet_id);
+                            let (arrow, from, to, color) = if turn.from_client {
+                                ("→", &client, &server, theme::tx())
+                            } else {
+                                ("←", &server, &client, theme::rx())
+                            };
+                            let frame = egui::Frame::none()
+                                .fill(if is_selected {
+                                    theme::raised()
+                                } else {
+                                    Color32::TRANSPARENT
+                                })
+                                .rounding(3.0)
+                                .inner_margin(egui::Margin::symmetric(6.0, 3.0));
+                            let response = frame
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    let mut job = LayoutJob::default();
+                                    let font = FontId::monospace(theme::LABEL);
+                                    job_text(&mut job, &format!("{arrow} "), font.clone(), color);
+                                    job_text(
+                                        &mut job,
+                                        &format!("{from} → {to}"),
+                                        font.clone(),
+                                        theme::text2(),
+                                    );
+                                    job_text(
+                                        &mut job,
+                                        &format!(
+                                            "  #{} · {} B{}",
+                                            turn.packet_id,
+                                            thousands(turn.len),
+                                            if turn.decrypted { " · decrypted" } else { "" }
+                                        ),
+                                        font,
+                                        theme::muted(),
+                                    );
+                                    ui.label(job);
+                                    let body = if hex { &turn.hex } else { &turn.text };
+                                    ui.add(
+                                        egui::Label::new(ui_kit::mono(
+                                            body.as_str(),
+                                            theme::DATA,
+                                            if turn.decrypted {
+                                                theme::text()
+                                            } else {
+                                                theme::text2()
+                                            },
+                                        ))
+                                        .wrap(),
+                                    );
+                                })
+                                .response
+                                .interact(Sense::click());
+                            if is_selected && scroll {
+                                response.scroll_to_me(Some(Align::Min));
+                            }
+                            if response.clicked() {
+                                clicked = Some(turn.packet_id);
+                            }
+                        }
+                    });
+            },
+        );
+        if toggle_hex {
+            self.hex = !self.hex;
+        }
+        if close {
+            self.toggle_conversation();
+        }
+        if let Some(id) = clicked {
+            self.follow = false;
+            self.select(id);
+            // Stay where the user clicked rather than jumping.
+            self.conversation_scroll = false;
+            if let Some(i) = self.selected_index() {
+                self.scroll(i);
+            }
         }
         let _ = cx;
     }

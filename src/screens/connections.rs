@@ -8,12 +8,12 @@ pub(crate) mod tests;
 
 use crate::backend::Command;
 use crate::connections::ConnectionId;
-use crate::shell::{Cx, Filter, Hint, Key, Nav, Screen, Tab};
+use crate::shell::{issue_strip, Cx, Filter, Hint, Key, Nav, Screen, Strip, Tab};
 use crate::{theme, ui_kit};
 use egui::{pos2, vec2, Align, FontId, Rect, Sense, Ui};
 use model::{Drive, Group, Line, Row, RttHistory, Show, Sort};
 use netwatch::collectors::connections::{process_label, Connection};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use ui_kit::{Cell, Column};
 
 /// Table columns in display order.
@@ -175,11 +175,20 @@ pub fn packet_filter(c: &Connection) -> String {
     }
 }
 
-pub fn selected<'a>(cx: &'a Cx) -> Option<&'a Connection> {
+/// The selected socket: a live one, or when the view is pinned to a past
+/// moment, one rebuilt from the timeline after it closed.
+pub fn selected(cx: &Cx) -> Option<Connection> {
     let id = cx.shared.connection.id.as_ref()?;
-    cx.s.connections
+    let matches = |c: &&Connection| ConnectionId::from(*c) == *id;
+    if let Some(c) = cx.s.connections.iter().find(matches) {
+        return Some(c.clone());
+    }
+    let at = model::pinned_at(cx.filter)?;
+    model::open_at(cx.s, at)
+        .connections
         .iter()
-        .find(|c| ConnectionId::from(*c) == *id)
+        .find(matches)
+        .cloned()
 }
 
 pub struct Connections {
@@ -193,8 +202,9 @@ pub struct Connections {
     focus_filter: bool,
     /// Folded rows (listeners, no egress) shown in place.
     pub expanded: bool,
-    /// Groups whose fold state differs from `groups_start_collapsed`.
-    toggled: HashSet<String>,
+    /// Fold state the user chose for a group (true = collapsed). Groups not
+    /// in here follow `default_collapsed`.
+    folds: HashMap<String, bool>,
     /// The group header under the keyboard cursor; None when a socket is.
     group_cursor: Option<String>,
     history: RttHistory,
@@ -216,7 +226,7 @@ impl Default for Connections {
             filter_editing: false,
             focus_filter: false,
             expanded: false,
-            toggled: HashSet::new(),
+            folds: HashMap::new(),
             group_cursor: None,
             history: RttHistory::default(),
             whois: HashSet::new(),
@@ -239,8 +249,12 @@ pub struct View {
 impl Connections {
     pub fn view(&self, cx: &Cx) -> View {
         let s = cx.s;
-        let all: Vec<Row> = s
-            .connections
+        let pinned = model::pinned_at(cx.filter).map(|at| model::open_at(s, at));
+        let source: &[Connection] = match &pinned {
+            Some(open) => &open.connections,
+            None => &s.connections,
+        };
+        let all: Vec<Row> = source
             .iter()
             .filter(|c| model::filter_matches(s, cx.filter, c))
             .map(|c| model::build_row(s, c))
@@ -266,9 +280,12 @@ impl Connections {
         let folded_rows: Vec<Row> = folded.iter().map(|i| rows[*i].clone()).collect();
         let main_len = ordered.len();
         ordered.extend(folded_rows);
-        let start_collapsed = s.config.groups_start_collapsed;
+        let open = self.auto_open(cx, &ordered[..main_len]);
         let lines = model::lines(&ordered[..main_len], self.group, |key| {
-            start_collapsed != self.toggled.contains(key)
+            self.folds
+                .get(key)
+                .copied()
+                .unwrap_or_else(|| s.config.groups_start_collapsed && !open.contains(key))
         });
         View {
             folded: (main_len..ordered.len()).collect(),
@@ -434,9 +451,34 @@ impl Screen for Connections {
         Tab::Connections
     }
 
+    /// Pinned to a timeline moment, the strip says what the table holds and
+    /// which columns are still live values. Otherwise the worst issue.
+    fn status(&self, cx: &Cx) -> Option<Strip> {
+        let Some(Filter::At { at, clock, .. }) = cx.filter else {
+            return issue_strip(cx.s);
+        };
+        let open = model::open_at(cx.s, *at);
+        Some(Strip {
+            color: theme::info(),
+            word: format!("@{clock}"),
+            sentence: format!(
+                "sockets open at {clock} · {} still open · {} closed since · rtt, retrans and rates are now, not then",
+                open.still_open, open.closed
+            ),
+            keys: vec![Hint::new(Key::Esc, "back to timeline")],
+        })
+    }
+
+    /// Arriving by a drill (dashboard ↵, navigator, timeline): scroll to the
+    /// selected socket, whose group `auto_open` has opened.
+    fn on_filter(&mut self, _filter: Option<&Filter>, _cx: &mut Cx) {
+        self.group_cursor = None;
+        self.scroll = true;
+    }
+
     fn crumbs(&self, cx: &Cx) -> Vec<String> {
         selected(cx)
-            .map(|c| vec![model::crumb(c)])
+            .map(|c| vec![model::crumb(&c)])
             .unwrap_or_default()
     }
 
@@ -455,6 +497,13 @@ impl Screen for Connections {
             })
             .collect();
         let chosen = cx.shared.connection.resolve(&selectable);
+        if chosen.is_none() && self.group_cursor.is_none() {
+            // Every group folded: put the cursor on the first header so the
+            // arrow and fold keys have somewhere to start.
+            if let Some(Line::Group { key, .. }) = view.lines.first() {
+                self.group_cursor = Some(key.clone());
+            }
+        }
         let selected_line = match self.header_line(&view) {
             Some(line) => Some(line),
             None => chosen.and_then(|n| {
@@ -686,10 +735,10 @@ impl Screen for Connections {
                     cx.shared.connection.id = Some(view.rows[*i].id.clone());
                     self.group_cursor = None;
                 }
-                Line::Group { key, .. } => {
+                Line::Group { key, collapsed, .. } => {
                     self.group_cursor = Some(key.clone());
                     if Some(line) == clicked_line {
-                        self.toggle_group(key);
+                        self.set_collapsed(key, !collapsed);
                     }
                 }
             }
@@ -704,7 +753,7 @@ impl Screen for Connections {
     }
 
     fn inspector(&mut self, ui: &mut Ui, cx: &mut Cx) {
-        let conn = selected(cx).cloned();
+        let conn = selected(cx);
         let ip = conn.as_ref().and_then(model::remote_ip);
         let actions = actions(conn.as_ref());
         inspector::draw(
@@ -753,7 +802,7 @@ impl Screen for Connections {
                 _ => {}
             }
         }
-        let conn = selected(cx).cloned();
+        let conn = selected(cx);
         match key {
             Key::Up => self.move_by(cx, -1),
             Key::Down => self.move_by(cx, 1),
@@ -781,25 +830,19 @@ impl Screen for Connections {
                 let Some(key_of) = self.cursor_group(cx, &view) else {
                     return key == Key::Char('Z') && self.fold_all(cx, &view);
                 };
-                let collapsed = self.is_collapsed(cx, &key_of);
+                let collapsed = self.is_collapsed(&view, &key_of);
                 match key {
                     Key::Space => {
-                        self.toggle_group(&key_of);
+                        self.set_collapsed(&key_of, !collapsed);
                         if !collapsed {
                             self.group_cursor = Some(key_of);
                         }
                     }
                     Key::Left => {
-                        if !collapsed {
-                            self.toggle_group(&key_of);
-                        }
+                        self.set_collapsed(&key_of, true);
                         self.group_cursor = Some(key_of);
                     }
-                    Key::Right => {
-                        if collapsed {
-                            self.toggle_group(&key_of);
-                        }
-                    }
+                    Key::Right => self.set_collapsed(&key_of, false),
                     _ => {
                         self.fold_all(cx, &view);
                     }
@@ -808,7 +851,9 @@ impl Screen for Connections {
             }
             Key::Enter if self.group_cursor.is_some() => {
                 if let Some(key_of) = self.group_cursor.clone() {
-                    self.toggle_group(&key_of);
+                    let view = self.view(cx);
+                    let collapsed = self.is_collapsed(&view, &key_of);
+                    self.set_collapsed(&key_of, !collapsed);
                 }
             }
             Key::Char('e') => cx.run(Command::ExportConnections),
@@ -906,14 +951,33 @@ impl Connections {
         self.scroll = true;
     }
 
-    fn is_collapsed(&self, cx: &Cx, key: &str) -> bool {
-        cx.s.config.groups_start_collapsed != self.toggled.contains(key)
+    /// Groups that open even when `groups_start_collapsed` is on: the one
+    /// holding the selected socket (the top group when no shown socket is
+    /// selected, so the first socket gets selected), any with a concern, and
+    /// every group of a view narrowed by a navigator filter or drill. Without
+    /// this the tab opened as a column of folded headers with nothing
+    /// selected.
+    fn auto_open(&self, cx: &Cx, rows: &[Row]) -> HashSet<String> {
+        let id = cx.shared.connection.id.as_ref();
+        let mut open: HashSet<String> = rows
+            .iter()
+            .filter(|r| cx.filter.is_some() || r.verdict.concern > 0 || Some(&r.id) == id)
+            .map(|r| self.group.key(r))
+            .collect();
+        if !rows.iter().any(|r| Some(&r.id) == id) {
+            open.extend(rows.first().map(|r| self.group.key(r)));
+        }
+        open
     }
 
-    fn toggle_group(&mut self, key: &str) {
-        if !self.toggled.remove(key) {
-            self.toggled.insert(key.to_string());
-        }
+    fn is_collapsed(&self, view: &View, key: &str) -> bool {
+        view.lines
+            .iter()
+            .any(|l| matches!(l, Line::Group { key: k, collapsed: true, .. } if k == key))
+    }
+
+    fn set_collapsed(&mut self, key: &str, collapsed: bool) {
+        self.folds.insert(key.to_string(), collapsed);
     }
 
     /// Collapses every group, or expands them all when all are collapsed.
@@ -930,14 +994,8 @@ impl Connections {
             return false;
         }
         let collapse = keys.iter().any(|(_, c)| !c);
-        let start = cx.s.config.groups_start_collapsed;
         for (key, _) in keys {
-            // toggled holds the groups whose state differs from the default.
-            if collapse != start {
-                self.toggled.insert(key);
-            } else {
-                self.toggled.remove(&key);
-            }
+            self.folds.insert(key, collapse);
         }
         if collapse {
             // Keep the cursor visible: on the header of the socket's group.
@@ -1002,10 +1060,7 @@ impl Connections {
 /// The grouping key of the selected socket, when it is in the view.
 fn selected_row_group(cx: &Cx, view: &View, group: Group) -> Option<String> {
     let id = cx.shared.connection.id.as_ref()?;
-    view.rows
-        .iter()
-        .find(|r| r.id == *id)
-        .map(|r| group.key(r))
+    view.rows.iter().find(|r| r.id == *id).map(|r| group.key(r))
 }
 
 /// Inspector actions for a socket on the connections tab.

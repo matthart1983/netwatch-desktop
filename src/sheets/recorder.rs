@@ -367,7 +367,15 @@ impl Recorder {
             } else {
                 ui_kit::lerp(theme::accent(), theme::window_bg(), 0.6)
             };
-            bars.vbar(x + 0.5, (bw - 1.0).max(1.0), inner.bottom(), inner.height(), h, color, true);
+            bars.vbar(
+                x + 0.5,
+                (bw - 1.0).max(1.0),
+                inner.bottom(),
+                inner.height(),
+                h,
+                color,
+                true,
+            );
         }
         bars.finish(ui);
         // The ring as recorded: frozen span in warn, armed span in muted.

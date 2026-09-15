@@ -267,11 +267,22 @@ impl Egress {
         out
     }
 
-    /// What `a` and `d` act on: the selected drift, else the newest drift.
-    fn decision_target(&self, cx: &Cx) -> Option<(String, DestRow)> {
-        self.selected_dest(cx)
-            .filter(|(_, d)| model::is_drift(&d.verdict))
-            .or_else(|| self.drifts(cx).into_iter().next())
+    /// What `a` and `d` act on. With a destination row selected, only that
+    /// row, and only when the inspector offers the action for it: `a` for a
+    /// destination the policy doesn't admit, `d` for a drift. Otherwise the
+    /// newest drift, which the status strip names.
+    fn decision_target(&self, cx: &Cx, key: char) -> Option<(String, DestRow)> {
+        if matches!(self.selected, Some(Sel::Dest(..))) {
+            return self.selected_dest(cx).filter(|(_, d)| match key {
+                'a' => !Self::admitted(&d.verdict),
+                _ => model::is_drift(&d.verdict),
+            });
+        }
+        self.drifts(cx).into_iter().next()
+    }
+
+    fn admitted(verdict: &Verdict) -> bool {
+        matches!(verdict, Verdict::Sni | Verdict::Ip | Verdict::Asn(_))
     }
 
     fn allow(&mut self, cx: &mut Cx, target: Option<(String, DestRow)>) -> bool {
@@ -660,7 +671,13 @@ impl Screen for Egress {
                 if drifts.len() == 1 { "" } else { "s" }
             ),
             sentence,
-            keys: vec![Hint::ch('a', "allow"), Hint::ch('d', "keep warning")],
+            // With a destination selected, a and d act on that row (see the
+            // inspector), so the strip doesn't offer them for the newest drift.
+            keys: if matches!(self.selected, Some(Sel::Dest(..))) {
+                Vec::new()
+            } else {
+                vec![Hint::ch('a', "allow newest"), Hint::ch('d', "keep warning")]
+            },
         })
     }
 
@@ -856,8 +873,7 @@ impl Screen for Egress {
                 );
                 ui_kit::rule(ui);
                 ui_kit::section(ui, "decide");
-                let admitted = matches!(dest.verdict, Verdict::Sni | Verdict::Ip | Verdict::Asn(_));
-                if !admitted {
+                if !Self::admitted(&dest.verdict) {
                     if let Some(allow) = model::allow_for(rule, d) {
                         let port = allow
                             .port
@@ -959,22 +975,10 @@ impl Screen for Egress {
         }
         ui_kit::rule(ui);
         self.diff_section(ui, &e, &process);
-        match clicked {
-            Some(Key::Enter) if matches!(self.selected, Some(Sel::Dest(..))) => {
-                self.packets(cx);
-            }
-            Some(Key::Char('a')) => {
-                let target = self.selected_dest(cx);
-                self.allow(cx, target);
-            }
-            Some(Key::Char('d')) => {
-                let target = self.selected_dest(cx);
-                self.keep_warning(cx, target);
-            }
-            Some(key) => {
-                self.key(key, cx);
-            }
-            None => {}
+        // Clicks take the same path as keys, so a click and a key press on
+        // the same decide row always act on the same destination.
+        if let Some(key) = clicked {
+            self.key(key, cx);
         }
     }
 
@@ -1080,8 +1084,10 @@ impl Screen for Egress {
 
     fn hints(&self, _cx: &Cx) -> Vec<Hint> {
         let mut hints = vec![Hint::glyph(Key::Down, "↑↓", "select")];
-        if self.selected.is_some() {
-            hints.push(Hint::new(Key::Enter, "promote"));
+        match self.selected {
+            Some(Sel::Dest(..)) => hints.push(Hint::new(Key::Enter, "packets")),
+            Some(Sel::Process(_)) => hints.push(Hint::new(Key::Enter, "promote")),
+            None => {}
         }
         hints.push(Hint::ch('P', "promote all"));
         if self.selected.is_some() {
@@ -1100,6 +1106,9 @@ impl Screen for Egress {
             Key::Home => self.move_by(isize::MIN, cx),
             Key::End => self.move_by(isize::MAX, cx),
             Key::Enter if self.query_focused => self.query_focused = false,
+            // ↵ on a destination opens its packets (as the inspector says);
+            // only a process row, or `w`, writes the policy.
+            Key::Enter if matches!(self.selected, Some(Sel::Dest(..))) => return self.packets(cx),
             Key::Enter | Key::Char('w') => return self.promote(cx),
             Key::Char('P') => cx.run(Command::EgressPromoteAll),
             Key::Char('e') => cx.run(Command::ExportEgress),
@@ -1110,11 +1119,11 @@ impl Screen for Egress {
                 self.show = Show::ALL[(i + 1) % Show::ALL.len()];
             }
             Key::Char('a') => {
-                let target = self.decision_target(cx);
+                let target = self.decision_target(cx, 'a');
                 return self.allow(cx, target);
             }
             Key::Char('d') => {
-                let target = self.decision_target(cx);
+                let target = self.decision_target(cx, 'd');
                 return self.keep_warning(cx, target);
             }
             Key::Char('/') => self.focus_query = true,
@@ -1129,7 +1138,7 @@ impl Screen for Egress {
 
     fn palette(&self, _cx: &Cx) -> Vec<(String, Key)> {
         vec![
-            ("promote selected process to policy".into(), Key::Enter),
+            ("promote selected process to policy".into(), Key::Char('w')),
             ("promote all processes to policy".into(), Key::Char('P')),
             ("export egress ndjson".into(), Key::Char('e')),
             ("allow drifting destination".into(), Key::Char('a')),
