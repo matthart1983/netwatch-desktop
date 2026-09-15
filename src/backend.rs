@@ -165,6 +165,9 @@ pub struct Snapshot {
     pub packets: PacketStore,
     pub dns_names: Option<DnsCache>,
     pub whois: Option<netwatch::collectors::whois::WhoisCache>,
+    /// GeoIP lookups (offline database, or ip-api.com when `geoip_online`).
+    /// `lookup` is cached; private addresses return `None`.
+    pub geo: Option<netwatch::collectors::geo::GeoCache>,
     pub processes: Arc<Vec<ProcessBandwidth>>,
     pub process_rx_history: Arc<ProcessHistory>,
     pub rtt_history: Arc<HashMap<String, VecDeque<f64>>>,
@@ -230,6 +233,7 @@ impl Snapshot {
             packets: PacketStore::default(),
             dns_names: None,
             whois: None,
+            geo: None,
             processes: Arc::new(vec![]),
             process_rx_history: Default::default(),
             rtt_history: Default::default(),
@@ -489,6 +493,7 @@ impl Snapshot {
             },
             dns_names: Some(app.packet_collector.dns_cache.clone()),
             whois: Some(app.whois_cache.clone()),
+            geo: app.ui.show_geo.then(|| app.geo_cache.clone()),
             processes: Arc::new(app.process_bandwidth.ranked().to_vec()),
             process_rx_history: Arc::new(app.caches.top_proc_rx_history.clone()),
             rtt_history: Arc::new(app.caches.rtt_history.clone()),

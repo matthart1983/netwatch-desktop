@@ -545,6 +545,8 @@ pub struct TableResponse {
     pub double_clicked: Option<usize>,
     pub secondary: Option<usize>,
     pub header_clicked: Option<usize>,
+    /// A right-click menu entry chosen this frame: (row, its key).
+    pub menu: Option<(usize, crate::shell::Key)>,
 }
 
 /// Data rows are 12px text with 4px/6px cell padding (22px) in the compact
@@ -565,6 +567,9 @@ pub struct Table<'a> {
     pub sort: Option<(usize, bool)>,
     /// Rows drawn as full-width group headers (text only, first cell spans).
     pub max_height: Option<f32>,
+    /// Right-click menu entries for a row; a chosen entry comes back in
+    /// [`TableResponse::menu`] and should be dispatched like its key.
+    pub menu: Option<&'a dyn Fn(usize) -> Vec<crate::shell::Hint>>,
 }
 
 impl<'a> Table<'a> {
@@ -578,7 +583,13 @@ impl<'a> Table<'a> {
             row_height: ROW_HEIGHT,
             sort: None,
             max_height: None,
+            menu: None,
         }
+    }
+    /// Right-click menu for each row: the same actions its inspector offers.
+    pub fn menu(mut self, entries: &'a dyn Fn(usize) -> Vec<crate::shell::Hint>) -> Self {
+        self.menu = Some(entries);
+        self
     }
     pub fn selected(mut self, row: Option<usize>) -> Self {
         self.selected = row;
@@ -664,6 +675,21 @@ impl<'a> Table<'a> {
                 }
                 if response.secondary_clicked() {
                     out.secondary = Some(row);
+                }
+                if let Some(entries) = self.menu {
+                    response.context_menu(|ui| {
+                        let entries = entries(row);
+                        if entries.is_empty() {
+                            ui.label(meta("no actions"));
+                        }
+                        for hint in entries {
+                            let text = format!("{}  {}", hint.key_text(), hint.label);
+                            if ui.button(mono(text, theme::LABEL, theme::text())).clicked() {
+                                out.menu = Some((row, hint.key));
+                                ui.close_menu();
+                            }
+                        }
+                    });
                 }
                 if !ui.is_rect_visible(rect) {
                     continue;

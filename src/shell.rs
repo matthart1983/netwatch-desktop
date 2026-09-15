@@ -332,6 +332,18 @@ pub trait Screen {
     /// Footer hints, most-used first; shown only while they do something.
     fn hints(&self, cx: &Cx) -> Vec<Hint>;
 
+    /// Every key this tab handles, for the `?` sheet: footer hints plus the
+    /// keys the footer has no room for. Defaults to the footer hints.
+    fn keys(&self, cx: &Cx) -> Vec<Hint> {
+        self.hints(cx)
+    }
+
+    /// Text for ctrl-C / ⌘C: the selected row or value, as the user would
+    /// paste it into a ticket. `None` when nothing is selected.
+    fn copy_text(&self, _cx: &Cx) -> Option<String> {
+        None
+    }
+
     /// Handle a key; return true when consumed. Called for clicks on hints
     /// too. Digits, `:`, `?`, `,`, `q`, `V`, `L`, `R`, `F`, `E` and `p` reach
     /// the shell only if the screen does not consume them.
