@@ -325,12 +325,12 @@ fn app_rows(ap: &AppProtocol) -> Vec<(String, String)> {
         } => {
             put("sni", sni.clone());
             put("alpn", alpn.clone());
-            put("ja4", ja4.clone());
+            put("ja4", ja4.as_deref().map(super::model::ja4_label));
             put("ech", Some(if *ech { "yes" } else { "no" }.into()));
         }
         AppProtocol::Quic { sni, ech, ja4 } => {
             put("sni", sni.clone());
-            put("ja4q", ja4.clone());
+            put("ja4q", ja4.as_deref().map(super::model::ja4_label));
             put("ech", Some(if *ech { "yes" } else { "no" }.into()));
         }
         AppProtocol::Dns {
@@ -489,6 +489,64 @@ pub fn layers(p: &CapturedPacket, tls_version: Option<&str>) -> Vec<Layer> {
         out.push(l7_layer(plain, alpn, off.payload.clone()));
     }
     out
+}
+
+/// The crate's decrypted QUIC Initial frame breakdown (CRYPTO, PADDING,
+/// PING…) for a UDP packet that carries a v1/v2 Initial.
+pub fn quic_initial_layer(p: &CapturedPacket) -> Option<Layer> {
+    if p.raw_bytes.is_empty() || !p.details.iter().any(|d| d.starts_with("UDP:")) {
+        return None;
+    }
+    let payload = netwatch::collectors::packets::extract_udp_app_payload(&p.raw_bytes);
+    let frames = netwatch::dpi::quic::decode_initial_frame_summary(&payload)?;
+    let framed = p.details.iter().any(|d| d.starts_with("Ethernet:"));
+    Some(Layer {
+        name: "quic initial".into(),
+        summary: format!(
+            "{} frame{} · header protection removed",
+            frames.len(),
+            if frames.len() == 1 { "" } else { "s" }
+        ),
+        rows: frames
+            .into_iter()
+            .map(|line| match line.split_once(' ') {
+                Some((k, v)) => (k.to_lowercase(), v.to_string()),
+                None => (String::new(), line),
+            })
+            .collect(),
+        span: framed.then(|| offsets(&p.raw_bytes).payload).flatten(),
+        kind: Kind::Wire,
+    })
+}
+
+/// HTTP/3 bodies the crate reassembled and decompressed for the packet's
+/// QUIC flow.
+pub fn h3_layer(bodies: &[netwatch::dpi::http3::DecodedBody]) -> Option<Layer> {
+    if bodies.is_empty() {
+        return None;
+    }
+    let mut rows = Vec::new();
+    for b in bodies {
+        rows.push((
+            format!("stream {}", b.stream_id),
+            format!("{} body · {} B", b.encoding.label(), b.bytes.len()),
+        ));
+        let preview = super::model::printable(&b.bytes[..b.bytes.len().min(600)]);
+        for line in preview.lines().filter(|l| !l.trim().is_empty()).take(6) {
+            rows.push((String::new(), line.chars().take(160).collect()));
+        }
+    }
+    Some(Layer {
+        name: "http/3".into(),
+        summary: format!(
+            "{} body{} decoded",
+            bodies.len(),
+            if bodies.len() == 1 { "" } else { "s" }
+        ),
+        rows,
+        span: None,
+        kind: Kind::L7,
+    })
 }
 
 /// Text mode: decrypted plaintext when present, else the readable payload.

@@ -53,6 +53,8 @@ pub struct Packets {
     /// The applied display filter.
     applied: String,
     draft: String,
+    /// A draft left unapplied by clicking away; `/` resumes it.
+    draft_kept: Option<String>,
     editing: bool,
     focus_field: bool,
     /// Inline bpf editor text while `b` is active.
@@ -60,8 +62,13 @@ pub struct Packets {
     focus_bpf: bool,
     follow: bool,
     hex: bool,
+    /// Packet ids. Kept for the session only: the crate's id counter
+    /// restarts at 0 each launch, so a saved id would mark another packet.
     bookmarks: BTreeSet<u64>,
     bookmark_gen: u64,
+    /// Remotes `W` asked whois about; only these show a whois result (a
+    /// cache lookup for any other address would queue a request).
+    whois_asked: BTreeSet<String>,
     narrow: Narrow,
     selected: Option<u64>,
     layer: Option<usize>,
@@ -83,6 +90,8 @@ pub struct Packets {
     packet: Option<CapturedPacket>,
     packet_key: Option<(u64, RingKey)>,
     layers: Vec<Layer>,
+    /// HTTP/3 bodies the crate decoded for the selected packet's QUIC flow.
+    h3: Vec<netwatch::dpi::http3::DecodedBody>,
     stream: Option<StreamInfo>,
     stream_key: Option<(u32, Instant)>,
     /// `s`: the bottom panes show the selected stream's conversation.
@@ -98,6 +107,7 @@ impl Default for Packets {
         Self {
             applied: String::new(),
             draft: String::new(),
+            draft_kept: None,
             editing: false,
             focus_field: false,
             bpf_draft: None,
@@ -106,6 +116,7 @@ impl Default for Packets {
             hex: true,
             bookmarks: BTreeSet::new(),
             bookmark_gen: 0,
+            whois_asked: BTreeSet::new(),
             narrow: Narrow::Off,
             selected: None,
             layer: None,
@@ -123,6 +134,7 @@ impl Default for Packets {
             packet: None,
             packet_key: None,
             layers: Vec::new(),
+            h3: Vec::new(),
             stream: None,
             stream_key: None,
             conversation: false,
@@ -164,6 +176,7 @@ impl Packets {
         self.built.total == 0
             && self.ring.0 == 0
             && !c.live
+            && bpf_error(s).is_none()
             && (c.error.is_some() || (!c.requested && c.received == 0))
     }
 
@@ -230,6 +243,7 @@ impl Packets {
             self.packet = None;
             self.packet_key = None;
             self.layers.clear();
+            self.h3.clear();
             self.stream = None;
             self.stream_key = None;
             self.turns = None;
@@ -253,6 +267,35 @@ impl Packets {
                 .as_ref()
                 .map(|p| decode::layers(p, version))
                 .unwrap_or_default();
+            self.h3 = match &self.packet {
+                Some(CapturedPacket {
+                    app_protocol: Some(netwatch::dpi::AppProtocol::Quic { .. }),
+                    stream_index: Some(index),
+                    ..
+                }) => s
+                    .packets
+                    .streams
+                    .lock()
+                    .ok()
+                    .and_then(|mut t| {
+                        t.all_streams
+                            .get_mut(index)
+                            .map(|st| st.quic_h3.decoded_bodies())
+                    })
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            };
+            if let Some(quic) = self.packet.as_ref().and_then(decode::quic_initial_layer) {
+                let at = self
+                    .layers
+                    .iter()
+                    .position(|l| l.kind != decode::Kind::Wire)
+                    .unwrap_or(self.layers.len());
+                self.layers.insert(at, quic);
+            }
+            if let Some(h3) = decode::h3_layer(&self.h3) {
+                self.layers.push(h3);
+            }
             if self.layer.is_some_and(|l| l >= self.layers.len()) {
                 self.layer = None;
             }
@@ -373,12 +416,46 @@ impl Packets {
         }
     }
 
+    /// `]` / `[`: the next or previous bookmarked packet in the list.
+    fn bookmark_step(&mut self, forward: bool, cx: &mut Cx) {
+        if self.bookmarks.is_empty() {
+            *cx.toast = Some(Toast::err("no bookmarks · m marks the selected packet"));
+            return;
+        }
+        let rows = &self.built.rows;
+        let from = self.selected_index();
+        let marked = |i: &usize| self.bookmarks.contains(&rows[*i].id);
+        let found = if forward {
+            let start = from.map(|i| i + 1).unwrap_or(0);
+            (start..rows.len()).find(marked)
+        } else {
+            let end = from.unwrap_or(rows.len());
+            (0..end).rev().find(marked)
+        };
+        match found {
+            Some(i) => {
+                let id = rows[i].id;
+                self.follow = false;
+                self.select(id);
+                self.scroll(i);
+            }
+            None => {
+                *cx.toast = Some(Toast::err(if forward {
+                    "no later bookmark in the list"
+                } else {
+                    "no earlier bookmark in the list"
+                }))
+            }
+        }
+    }
+
     /// Applies `expr` if it parses. An expression that doesn't (a typed
     /// palette filter, say) is never applied: the crate would treat it as no
     /// filter and every packet would read as a match. It opens in the field
     /// instead, with the reason, and the list stays unfiltered.
     fn apply_filter(&mut self, expr: String) {
         let expr = expr.trim().to_string();
+        self.draft_kept = None;
         if model::filter_error(&expr).is_some() {
             self.applied.clear();
             self.draft = expr;
@@ -395,7 +472,21 @@ impl Packets {
     fn start_editing(&mut self) {
         self.editing = true;
         self.focus_field = true;
+        self.draft = self
+            .draft_kept
+            .take()
+            .unwrap_or_else(|| self.applied.clone());
+    }
+
+    /// Focus left the field (a click elsewhere): stop editing but keep an
+    /// unapplied draft for the next `/`.
+    fn leave_editing(&mut self) {
+        if self.draft.trim() != self.applied.trim() {
+            self.draft_kept = Some(std::mem::take(&mut self.draft));
+        }
         self.draft = self.applied.clone();
+        self.editing = false;
+        self.list_key = None;
     }
 
     fn stop_editing(&mut self, apply: bool) -> bool {
@@ -407,6 +498,7 @@ impl Packets {
             self.apply_filter(draft);
         } else {
             self.draft = self.applied.clone();
+            self.draft_kept = None;
             self.list_key = None;
         }
         self.editing = false;
@@ -478,9 +570,38 @@ impl Packets {
         }
     }
 
-    fn whois(&self, cx: &mut Cx) {
+    fn whois(&mut self, cx: &mut Cx) {
         if let Some((ip, _)) = self.remote() {
+            self.whois_asked.insert(ip.clone());
             cx.run(Command::Whois(ip));
+        }
+    }
+
+    /// The selected packet as the TUI's `y` copies it: header, every detail
+    /// line, JA4 with its client name, decrypted payload and HTTP/3 bodies.
+    fn packet_text(&self) -> Option<String> {
+        self.packet
+            .as_ref()
+            .map(|p| netwatch::ui::packets::format_packet_for_clipboard(p, &self.h3))
+    }
+
+    /// What `↵` does with the current selection, for hints and menus.
+    fn enter_label(&self) -> Option<String> {
+        let info = self.stream.as_ref()?;
+        Some(if self.applied.trim() == format!("stream {}", info.index) {
+            format!("connection {}:{}", info.server.0, info.server.1)
+        } else {
+            format!("filter to stream {}", info.index)
+        })
+    }
+
+    fn copy_packet(&mut self, cx: &mut Cx) {
+        match (self.packet_text(), self.packet.as_ref().map(|p| p.id)) {
+            (Some(text), Some(id)) => {
+                self.pending_copy = Some(text);
+                *cx.toast = Some(Toast::ok(format!("copied packet #{id}")));
+            }
+            _ => *cx.toast = Some(Toast::err("no packet selected")),
         }
     }
 
@@ -514,8 +635,10 @@ impl Screen for Packets {
         Tab::Packets
     }
 
+    /// `stream N` only while that stream filter is applied (and a drill
+    /// crumb doesn't already name it), never for a plain selection.
     fn crumbs(&self, cx: &Cx) -> Vec<String> {
-        match self.stream.as_ref().map(|s| s.index) {
+        match model::stream_of_filter(&self.applied) {
             Some(n) if cx.filter != Some(&Filter::Stream(n)) => vec![format!("stream {n}")],
             _ => Vec::new(),
         }
@@ -563,11 +686,18 @@ impl Screen for Packets {
             hints.push(Hint::ch('h', if self.hex { "text" } else { "hex" }));
             hints.push(Hint::glyph(Key::Right, "←→", "direction"));
         } else if self.stream.is_some() {
-            hints.push(Hint::new(Key::Enter, "stream"));
+            let label = if model::stream_of_filter(&self.applied).is_some() {
+                "connection"
+            } else {
+                "stream"
+            };
+            hints.push(Hint::new(Key::Enter, label));
             hints.push(Hint::ch('s', "conversation"));
         }
         if cx.filter.is_some() {
             hints.push(Hint::new(Key::Esc, "back"));
+        } else if !self.conversation && !self.applied.trim().is_empty() {
+            hints.push(Hint::new(Key::Esc, "clear filter"));
         }
         let c = &cx.s.capture_state;
         hints.push(Hint::ch(
@@ -582,6 +712,9 @@ impl Screen for Packets {
         if self.selected.is_some() {
             hints.push(Hint::ch('m', "bookmark"));
         }
+        if !self.bookmarks.is_empty() {
+            hints.push(Hint::glyph(Key::Char(']'), "[ ]", "bookmarks"));
+        }
         if self.built.rows.iter().any(|r| r.finding.is_some()) {
             hints.push(Hint::ch('n', "next finding"));
         }
@@ -592,6 +725,74 @@ impl Screen for Packets {
             hints.push(Hint::ch('i', "interface"));
         }
         hints
+    }
+
+    fn keys(&self, cx: &Cx) -> Vec<Hint> {
+        let c = &cx.s.capture_state;
+        let mut keys = vec![
+            Hint::ch('/', "edit display filter"),
+            Hint::new(
+                Key::Esc,
+                if cx.filter.is_some() {
+                    "back"
+                } else {
+                    "clear filter · close conversation"
+                },
+            ),
+            Hint::ch(
+                'c',
+                if c.live || c.requested {
+                    "stop capture"
+                } else {
+                    "start capture"
+                },
+            ),
+            Hint::ch('b', "bpf capture filter"),
+            Hint::ch('f', "follow the newest packet"),
+            Hint::glyph(
+                Key::Down,
+                "↑↓",
+                "select packet · layer when decode is focused",
+            ),
+            Hint::glyph(Key::PageDown, "pgup pgdn", "page"),
+            Hint::glyph(Key::End, "home end", "first · last packet"),
+            Hint::new(
+                Key::Enter,
+                self.enter_label()
+                    .unwrap_or_else(|| "filter to stream · then connection".into()),
+            ),
+            Hint::ch('s', "stream conversation"),
+            Hint::glyph(Key::Right, "←→ a", "direction"),
+            Hint::ch('h', "hex / text"),
+            Hint::ch('m', "bookmark packet"),
+            Hint::glyph(Key::Char(']'), "[ ]", "previous · next bookmark"),
+            Hint::ch('M', "bookmarks only"),
+            Hint::ch('n', "next expert finding"),
+            Hint::ch('N', "previous expert finding"),
+            Hint::ch('x', "findings only"),
+            Hint::ch('X', "clear capture"),
+            Hint::ch('w', "export list .pcap"),
+            Hint::ch('S', "export stream .pcap"),
+            Hint::ch('j', "pivot on ja4"),
+            Hint::ch('W', "whois remote"),
+            Hint::ch(
+                'y',
+                if self.capture_unavailable(cx.s) {
+                    "copy grant command"
+                } else {
+                    "copy packet"
+                },
+            ),
+            Hint::ch('i', "cycle capture interface"),
+        ];
+        if self.editing || self.bpf_draft.is_some() {
+            keys.insert(0, Hint::new(Key::Enter, "apply"));
+        }
+        keys
+    }
+
+    fn copy_text(&self, _cx: &Cx) -> Option<String> {
+        self.packet_text()
     }
 
     fn key(&mut self, key: Key, cx: &mut Cx) -> bool {
@@ -648,13 +849,17 @@ impl Screen for Packets {
                     }
                 }
             }
-            Key::Char('w') if focus == 2 => self.export_stream(cx),
             Key::Char('w') => self.export_list(cx),
+            Key::Char('S') => self.export_stream(cx),
             Key::Char('h') => self.hex = !self.hex,
             Key::Char('s') if self.conversation || self.stream.is_some() => {
                 self.toggle_conversation()
             }
             Key::Esc if self.conversation => self.toggle_conversation(),
+            Key::Esc if cx.filter.is_none() && !self.applied.trim().is_empty() => {
+                self.drill_expr = None;
+                self.apply_filter(String::new());
+            }
             Key::Char('m') => {
                 let Some(id) = self.selected else {
                     return false;
@@ -664,6 +869,17 @@ impl Screen for Packets {
                 }
                 self.bookmark_gen += 1;
             }
+            Key::Char('M') => {
+                self.narrow = match self.narrow {
+                    Narrow::Bookmarks => Narrow::Off,
+                    _ => Narrow::Bookmarks,
+                };
+                if let Some(i) = self.selected_index() {
+                    self.scroll(i);
+                }
+            }
+            Key::Char(']') => self.bookmark_step(true, cx),
+            Key::Char('[') => self.bookmark_step(false, cx),
             Key::Char('n') => self.finding_step(true, cx),
             Key::Char('N') => self.finding_step(false, cx),
             Key::Char('x') => {
@@ -691,6 +907,7 @@ impl Screen for Packets {
                 self.pending_copy = Some(Self::grant_command());
                 *cx.toast = Some(Toast::ok("copied grant command"));
             }
+            Key::Char('y') => self.copy_packet(cx),
             Key::Up if focus == 1 => {
                 self.layer = Some(self.layer.map(|l| l.saturating_sub(1)).unwrap_or(0));
                 self.hex_scroll = self.layer_start();
@@ -709,11 +926,12 @@ impl Screen for Packets {
                 self.step(-(self.built.rows.len() as isize));
             }
             Key::End => self.step(self.built.rows.len() as isize),
-            Key::Enter => match (&self.stream, focus) {
-                (Some(_), 2) => self.drill_connection(cx),
-                (Some(info), _) => {
+            // The same on every panel: filter to the stream, then (once
+            // filtered) open its connection.
+            Key::Enter => match &self.stream {
+                Some(info) => {
                     let expr = format!("stream {}", info.index);
-                    if self.applied == expr {
+                    if self.applied.trim() == expr {
                         self.drill_connection(cx);
                     } else {
                         let keep = self.selected;
@@ -722,7 +940,7 @@ impl Screen for Packets {
                         self.follow = false;
                     }
                 }
-                (None, _) => return false,
+                None => return false,
             },
             _ => return false,
         }
@@ -736,6 +954,11 @@ impl Screen for Packets {
             ("edit display filter".into(), Key::Char('/')),
             ("set bpf capture filter".into(), Key::Char('b')),
             ("export filtered packets as pcap".into(), Key::Char('w')),
+            ("export selected stream as pcap".into(), Key::Char('S')),
+            ("copy selected packet".into(), Key::Char('y')),
+            ("next bookmark".into(), Key::Char(']')),
+            ("previous bookmark".into(), Key::Char('[')),
+            ("narrow to bookmarks".into(), Key::Char('M')),
             ("toggle follow tail".into(), Key::Char('f')),
             ("narrow to expert findings".into(), Key::Char('x')),
             ("next expert finding".into(), Key::Char('n')),
@@ -749,15 +972,7 @@ impl Screen for Packets {
         let mut t = toml::Table::new();
         t.insert("follow".into(), self.follow.into());
         t.insert("hex".into(), self.hex.into());
-        t.insert(
-            "bookmarks".into(),
-            toml::Value::Array(
-                self.bookmarks
-                    .iter()
-                    .map(|id| toml::Value::Integer(*id as i64))
-                    .collect(),
-            ),
-        );
+        // Bookmarks are not saved: packet ids restart each launch.
         Some(t)
     }
 
@@ -768,15 +983,6 @@ impl Screen for Packets {
         if let Some(v) = state.get("hex").and_then(|v| v.as_bool()) {
             self.hex = v;
         }
-        if let Some(list) = state.get("bookmarks").and_then(|v| v.as_array()) {
-            self.bookmarks = list
-                .iter()
-                .filter_map(|v| v.as_integer())
-                .filter(|v| *v >= 0)
-                .map(|v| v as u64)
-                .collect();
-            self.bookmark_gen += 1;
-        }
     }
 
     fn on_filter(&mut self, filter: Option<&Filter>, _cx: &mut Cx) {
@@ -784,6 +990,7 @@ impl Screen for Packets {
             Some(expr) => {
                 self.drill_expr = Some(expr.clone());
                 self.editing = false;
+                self.draft_kept = None;
                 self.follow = false;
                 self.apply_filter(expr);
             }
@@ -796,6 +1003,15 @@ impl Screen for Packets {
             }
         }
     }
+}
+
+/// The capture's error when it is the crate's BPF compile failure rather
+/// than a capture privilege problem.
+fn bpf_error(s: &Snapshot) -> Option<&str> {
+    s.capture_state
+        .error
+        .as_deref()
+        .filter(|e| e.contains("BPF"))
 }
 
 impl Packets {

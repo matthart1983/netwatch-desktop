@@ -166,17 +166,24 @@ impl Packets {
                 response.request_focus();
                 self.focus_field = false;
             } else if !response.has_focus() {
-                // Clicked elsewhere: keep the applied filter.
-                self.stop_editing(false);
+                // Clicked elsewhere: the applied filter stays and the draft
+                // is kept for the next `/`.
+                self.leave_editing();
             }
         } else {
             if ui.memory(|m| m.has_focus(id)) {
                 ui.memory_mut(|m| m.surrender_focus(id));
             }
-            let (text, color) = if self.applied.is_empty() {
-                ("display filter  tls and sni:github", theme::muted())
-            } else {
-                (self.applied.as_str(), theme::text())
+            let kept;
+            let (text, color) = match &self.draft_kept {
+                Some(draft) => {
+                    kept = format!("{draft}  · unapplied, / resumes");
+                    (kept.as_str(), theme::muted())
+                }
+                None if self.applied.is_empty() => {
+                    ("display filter  tls and sni:github", theme::muted())
+                }
+                None => (self.applied.as_str(), theme::text()),
             };
             ui_kit::paint_text(
                 ui,
@@ -257,6 +264,7 @@ impl Packets {
             }
             keys
         };
+        let bpf_error = super::bpf_error(cx.s).map(str::to_string);
         let font = FontId::monospace(theme::LABEL);
         let keys_w: f32 = keys
             .iter()
@@ -382,12 +390,22 @@ impl Packets {
                         ui.memory_mut(|m| m.surrender_focus(bpf_id));
                     }
                     match &c.bpf {
-                        Some(bpf) => ui.add(
-                            egui::Label::new(ui_kit::mono(bpf, theme::DATA, theme::text()))
-                                .truncate(),
-                        ),
+                        Some(bpf) => ui.label(ui_kit::mono(bpf, theme::DATA, theme::text())),
                         None => ui.label(ui_kit::mono("none", theme::DATA, theme::muted())),
                     };
+                    if let Some(e) = &bpf_error {
+                        // The compile failure itself, not just a hover.
+                        let reason = e.strip_prefix("BPF filter error: ").unwrap_or(e);
+                        ui.add(
+                            egui::Label::new(ui_kit::mono(
+                                format!("✕ {reason}"),
+                                theme::DATA,
+                                theme::error(),
+                            ))
+                            .truncate(),
+                        )
+                        .on_hover_text(e);
+                    }
                 }
             });
         });
@@ -407,28 +425,23 @@ impl Packets {
             Narrow::Off => {}
             Narrow::AllFindings => meta = format!("findings only · {meta}"),
             Narrow::Finding(label) => meta = format!("{label} only · {meta}"),
+            Narrow::Bookmarks => meta = format!("bookmarks only · {meta}"),
         }
         let focused = *cx.focus == 0;
         let mut bookmark_click = false;
+        let bpf_error = super::bpf_error(cx.s).map(str::to_string);
         let narrow = rect.width() < 900.0;
-        // Below ~680px the time column yields its room to info; the decode
-        // panel still names the packet's time.
-        let with_time = rect.width() >= 680.0;
-        self.time_hidden = !with_time;
-        let mut columns = vec![
-            Column::px("", 20.0),
-            Column::px("#", 52.0),
-            Column::px("time", if narrow { 80.0 } else { 100.0 }),
-            Column::flex("src", 0.5, 136.0),
-            Column::flex("dst", 0.5, 136.0),
-            Column::px("proto", 62.0),
-            Column::px("len", 46.0).right(),
-            Column::flex("info", 2.0, 100.0),
-        ];
-        let mut ids: Vec<usize> = (0..columns.len()).collect();
-        if !with_time {
-            columns.remove(2);
-            ids.remove(2);
+        let (columns, ids) = list_columns(rect.width() - 26.0, narrow);
+        // The decode panel names the packet's time when the column yields.
+        self.time_hidden = !ids.contains(&2);
+        // Wheel scrolling reads back through the list: stop following the
+        // tail instead of snapping to it on the next packet (as the TUI).
+        if self.follow
+            && ui.rect_contains_pointer(rect)
+            && ui.input(|i| i.raw_scroll_delta.y != 0.0 || i.smooth_scroll_delta.y != 0.0)
+        {
+            self.follow = false;
+            self.scroll_frames = 0;
         }
         let selected = self.selected_index();
         let viewport = rect.height() - 90.0;
@@ -454,8 +467,12 @@ impl Packets {
             |ui| {
                 if self.built.rows.is_empty() {
                     let c = &cx.s.capture_state;
-                    let text = if self.built.total > 0 && self.narrow != Narrow::Off {
+                    let text = if self.built.total > 0 && self.narrow == Narrow::Bookmarks {
+                        "no bookmarked packet in the list · M shows everything".to_string()
+                    } else if self.built.total > 0 && self.narrow != Narrow::Off {
                         "no findings in the filtered list · x shows everything".to_string()
+                    } else if let Some(e) = &bpf_error {
+                        format!("capture could not start: {e} · b edits the filter")
                     } else if self.built.total > 0 {
                         format!(
                             "no packet matches `{}` · / edits the filter",
@@ -472,10 +489,13 @@ impl Packets {
                 }
                 let rows = &self.built.rows;
                 let bookmarks = &self.bookmarks;
+                let applied = model::stream_of_filter(&self.applied);
+                let menu = |r: usize| row_menu(&rows[r], bookmarks, applied);
                 Some(
                     ui_kit::Table::new("packets_list", &columns, rows.len())
                         .selected(selected)
                         .scroll_to(scroll_to)
+                        .menu(&menu)
                         .show(
                             ui,
                             |r, c| {
@@ -515,8 +535,8 @@ impl Packets {
                                         };
                                         Cell::muted(t.to_string())
                                     }
-                                    3 => Cell::text(&row.src),
-                                    4 => Cell::text(&row.dst),
+                                    3 => endpoint_cell(&row.src),
+                                    4 => endpoint_cell(&row.dst),
                                     5 => Cell::colored(&row.proto, theme::text2()),
                                     6 => Cell::muted(row.len.to_string()),
                                     _ => Cell::text(&row.info),
@@ -540,6 +560,15 @@ impl Packets {
                 use crate::shell::Screen;
                 self.key(Key::Enter, cx);
             }
+            if let Some((i, key)) = response.menu {
+                if let Some(row) = self.built.rows.get(i) {
+                    use crate::shell::Screen;
+                    let id = row.id;
+                    self.follow = false;
+                    self.select(id);
+                    self.key(key, cx);
+                }
+            }
         }
         if bookmark_click {
             use crate::shell::Screen;
@@ -561,7 +590,7 @@ impl Packets {
                     AppProtocol::Tls { ja4: Some(j), .. } | AppProtocol::Quic { ja4: Some(j), .. },
                 ) = &p.app_protocol
                 {
-                    meta.push_str(&format!(" · ja4 {j}"));
+                    meta.push_str(&format!(" · ja4 {}", model::ja4_label(j)));
                 }
                 (format!("#{}", p.id), meta)
             }
@@ -1139,6 +1168,21 @@ impl Packets {
                 None => "select a packet to see its stream.".into(),
             };
             ui.label(ui_kit::label(text));
+            if self.packet.is_some() {
+                ui_kit::rule(ui);
+                self.peer_section(ui, cx);
+                ui_kit::rule(ui);
+                ui_kit::section(ui, "actions");
+                let actions = [
+                    Hint::ch('W', "whois remote"),
+                    Hint::ch('y', "copy packet"),
+                    Hint::ch('m', "bookmark"),
+                ];
+                if let Some(key) = action_list(ui, &actions) {
+                    use crate::shell::Screen;
+                    self.key(key, cx);
+                }
+            }
             return;
         };
         let pill = if !info.encrypted() {
@@ -1290,14 +1334,21 @@ impl Packets {
                 },
             ));
             match &info.app {
-                Some(AppProtocol::Tls { sni, alpn, ech, .. }) => {
+                Some(AppProtocol::Tls {
+                    sni,
+                    alpn,
+                    ech,
+                    ja4,
+                }) => {
                     kv.push(("alpn", alpn.clone().unwrap_or("–".into()), theme::text()));
                     kv.push(("sni", sni.clone().unwrap_or("–".into()), theme::text()));
                     kv.push(("ech", if *ech { "yes" } else { "no" }.into(), theme::text()));
+                    kv.push(ja4_client(ja4.as_deref()));
                 }
-                Some(AppProtocol::Quic { sni, ech, .. }) => {
+                Some(AppProtocol::Quic { sni, ech, ja4 }) => {
                     kv.push(("sni", sni.clone().unwrap_or("–".into()), theme::text()));
                     kv.push(("ech", if *ech { "yes" } else { "no" }.into(), theme::text()));
+                    kv.push(ja4_client(ja4.as_deref()));
                 }
                 _ => {}
             }
@@ -1359,10 +1410,11 @@ impl Packets {
             .wrap(),
         );
         ui_kit::rule(ui);
+        self.peer_section(ui, cx);
+        ui_kit::rule(ui);
         ui_kit::section(ui, "actions");
         let mut actions = Vec::new();
-        if let Some(j) = info.ja4() {
-            let _ = j;
+        if info.ja4().is_some() {
             actions.push(Hint::ch(
                 'j',
                 format!(
@@ -1372,18 +1424,39 @@ impl Packets {
                 ),
             ));
         }
-        actions.push(Hint::ch('w', "export stream .pcap"));
+        // Every row is the key that does the same thing from any panel.
         actions.push(Hint::new(
             Key::Enter,
-            format!("connection {}:{}", info.server.0, info.server.1),
+            self.enter_label().unwrap_or_default(),
         ));
+        actions.push(Hint::ch('s', "stream conversation"));
+        actions.push(Hint::ch('S', "export stream .pcap"));
         actions.push(Hint::ch('W', format!("whois {}", info.server.0)));
-        match action_list(ui, &actions) {
-            Some(Key::Char('j')) => self.pivot_ja4(cx),
-            Some(Key::Char('w')) => self.export_stream(cx),
-            Some(Key::Enter) => self.drill_connection(cx),
-            Some(Key::Char('W')) => self.whois(cx),
-            _ => {}
+        actions.push(Hint::ch('y', "copy packet"));
+        if let Some(key) = action_list(ui, &actions) {
+            use crate::shell::Screen;
+            self.key(key, cx);
+        }
+    }
+
+    /// The far end's names: reverse dns, geo (when enabled) and the whois
+    /// answer once `W` asked for it.
+    fn peer_section(&self, ui: &mut Ui, cx: &Cx) {
+        let Some((ip, _)) = self.remote() else {
+            return;
+        };
+        ui_kit::section(ui, &format!("peer · {ip}"));
+        for (k, v, c) in peer_rows(cx.s, &ip, self.whois_asked.contains(&ip)) {
+            let mut job = LayoutJob::default();
+            job.wrap.max_width = ui.available_width();
+            job_text(
+                &mut job,
+                &format!("{k:<6}"),
+                FontId::monospace(theme::LABEL),
+                theme::muted(),
+            );
+            job_text(&mut job, &v, FontId::monospace(theme::DATA), c);
+            ui.label(job);
         }
     }
 
@@ -1391,10 +1464,16 @@ impl Packets {
 
     pub(super) fn draw_navigator(&mut self, ui: &mut Ui, cx: &mut Cx) {
         let _ = cx;
-        nav_heading(ui, "bookmarks · n / N");
+        nav_heading(ui, "bookmarks · [ ] jump");
         let mut pick = None;
         if self.bookmarks.is_empty() {
             ui.label(ui_kit::meta("  m marks the selected packet"));
+        } else {
+            ui.label(ui_kit::meta(if self.narrow == Narrow::Bookmarks {
+                "  M shows every packet"
+            } else {
+                "  M lists only these"
+            }));
         }
         for id in self.bookmarks.iter().rev().take(8) {
             let label = self.built.bookmark_labels.get(id);
@@ -1452,6 +1531,136 @@ impl Packets {
     }
 }
 
+/// The packet list's columns for a table `width` wide, with each column's
+/// id (0 gutter, 1 #, 2 time, 3 src, 4 dst, 5 proto, 6 len, 7 info). Room
+/// goes to info first: src/dst narrow (their ports stay visible), then len
+/// hides, then info shrinks to a floor, then time hides.
+pub(super) fn list_columns(width: f32, narrow: bool) -> (Vec<Column>, Vec<usize>) {
+    const INFO_MIN: f32 = 240.0;
+    const INFO_FLOOR: f32 = 170.0;
+    // `10.88.0.2:52344` whole at 12 pt mono, with cell padding.
+    const EP_MIN: f32 = 124.0;
+    const EP_MAX: f32 = 170.0;
+    let time_w = if narrow { 80.0 } else { 100.0 };
+    let mut with_len = true;
+    let mut with_time = true;
+    let base = |len: bool, time: bool| {
+        let cols = 6 + len as usize + time as usize;
+        20.0 + 52.0
+            + 62.0
+            + if len { 46.0 } else { 0.0 }
+            + if time { time_w } else { 0.0 }
+            + ui_kit::COLUMN_GAP * (cols - 1) as f32
+    };
+    let room = |len: bool, time: bool, info: f32| width - base(len, time) - info;
+    if room(true, true, INFO_MIN) < 2.0 * EP_MIN {
+        with_len = false;
+        // Info gives up some room before the time column goes.
+        if room(false, true, INFO_FLOOR) < 2.0 * EP_MIN {
+            with_time = false;
+        }
+    }
+    let ep = (room(with_len, with_time, INFO_MIN) / 2.0).clamp(EP_MIN, EP_MAX);
+    let mut out = vec![
+        (0, Column::px("", 20.0)),
+        (1, Column::px("#", 52.0)),
+        (2, Column::px("time", time_w)),
+        (3, Column::px("src", ep)),
+        (4, Column::px("dst", ep)),
+        (5, Column::px("proto", 62.0)),
+        (6, Column::px("len", 46.0).right()),
+        (7, Column::flex("info", 1.0, 100.0)),
+    ];
+    out.retain(|(id, _)| (*id != 6 || with_len) && (*id != 2 || with_time));
+    out.into_iter().map(|(id, c)| (c, id)).unzip()
+}
+
+/// `10.0.0.2:443` / `[::1]:443` → (address, `:443`).
+pub(super) fn split_endpoint(text: &str) -> (&str, &str) {
+    if text.starts_with('[') {
+        if let Some(i) = text.rfind("]:") {
+            return text.split_at(i + 1);
+        }
+    } else if text.matches(':').count() == 1 {
+        if let Some(i) = text.find(':') {
+            return text.split_at(i);
+        }
+    }
+    (text, "")
+}
+
+/// An endpoint cell: the address truncates, the muted port stays whole.
+fn endpoint_cell(text: &str) -> Cell {
+    let (addr, port) = split_endpoint(text);
+    let (addr, port) = (addr.to_string(), port.to_string());
+    Cell::paint(move |ui, rect| {
+        let font = FontId::monospace(theme::DATA);
+        let port_w = if port.is_empty() {
+            0.0
+        } else {
+            ui_kit::text_width(ui, &port, font.clone())
+        };
+        let addr_w = ui_kit::text_width(ui, &addr, font.clone());
+        let fits = addr_w + port_w <= rect.width();
+        let addr_rect = Rect::from_min_max(
+            rect.min,
+            pos2((rect.right() - port_w).max(rect.left()), rect.bottom()),
+        );
+        ui_kit::paint_text(
+            ui,
+            addr_rect,
+            &addr,
+            font.clone(),
+            theme::text(),
+            Align::Min,
+        );
+        if !port.is_empty() {
+            // Whole port right after the address, or at the cell's end when
+            // the address had to truncate.
+            let left = if fits {
+                rect.left() + addr_w
+            } else {
+                addr_rect.right()
+            };
+            let at = Rect::from_min_max(pos2(left, rect.top()), rect.max);
+            ui_kit::paint_text(ui, at, &port, font, theme::muted(), Align::Min);
+        }
+    })
+}
+
+/// Right-click entries for one list row: the inspector's actions, for the
+/// packet on that row.
+pub(super) fn row_menu(
+    row: &model::Row,
+    bookmarks: &std::collections::BTreeSet<u64>,
+    applied_stream: Option<u32>,
+) -> Vec<Hint> {
+    let mut out = vec![Hint::ch(
+        'm',
+        if bookmarks.contains(&row.id) {
+            "remove bookmark"
+        } else {
+            "bookmark"
+        },
+    )];
+    if let Some(n) = row.stream {
+        out.push(Hint::new(
+            Key::Enter,
+            if applied_stream == Some(n) {
+                "open connection".to_string()
+            } else {
+                format!("filter to stream {n}")
+            },
+        ));
+        out.push(Hint::ch('s', "stream conversation"));
+        out.push(Hint::ch('S', "export stream .pcap"));
+        out.push(Hint::ch('j', "pivot on ja4"));
+    }
+    out.push(Hint::ch('W', "whois remote"));
+    out.push(Hint::ch('y', "copy packet"));
+    out
+}
+
 /// Key + label rows (the kit's `actions`, with explicit per-row ids so
 /// several rows never share one).
 fn action_list(ui: &mut Ui, hints: &[Hint]) -> Option<Key> {
@@ -1490,6 +1699,79 @@ fn action_list(ui: &mut Ui, hints: &[Hint]) -> Option<Key> {
         }
     }
     clicked
+}
+
+fn ja4_client(ja4: Option<&str>) -> (&'static str, String, Color32) {
+    match ja4 {
+        Some(j) => match netwatch::dpi::ja4_db::lookup(j) {
+            Some(name) => ("client", name.to_string(), theme::text()),
+            None => ("client", "– · ja4 not in database".into(), theme::muted()),
+        },
+        None => ("client", "– · no ja4".into(), theme::muted()),
+    }
+}
+
+/// (label, value, colour) rows for the peer section.
+pub(super) fn peer_rows(
+    s: &crate::backend::Snapshot,
+    ip: &str,
+    whois_asked: bool,
+) -> Vec<(&'static str, String, Color32)> {
+    let mut rows = Vec::new();
+    rows.push(match s.host_name(ip) {
+        Some(name) => ("name", name, theme::text()),
+        None => ("name", "– · no reverse dns".into(), theme::muted()),
+    });
+    rows.push(match &s.geo {
+        None => ("geo", "– · geo off in settings".into(), theme::muted()),
+        Some(geo) => match geo.lookup(ip) {
+            Some(g) => {
+                let place = [g.country_code.as_str(), g.city.as_str(), g.org.as_str()]
+                    .into_iter()
+                    .filter(|p| !p.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                ("geo", place, theme::text())
+            }
+            None => ("geo", "– · private or not resolved".into(), theme::muted()),
+        },
+    });
+    let private = match ip.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) => v4.is_private() || v4.is_loopback() || v4.is_link_local(),
+        Ok(std::net::IpAddr::V6(v6)) => {
+            v6.is_loopback()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+        }
+        Err(_) => false,
+    };
+    let whois = match (&s.whois, whois_asked) {
+        _ if private => ("whois", "– · private address".into(), theme::muted()),
+        (_, false) => ("whois", "– · W looks it up".into(), theme::muted()),
+        (None, true) => ("whois", "– · whois unavailable".into(), theme::muted()),
+        (Some(cache), true) => match cache.lookup(ip) {
+            Some(w) => {
+                let text = [
+                    w.net_name.as_str(),
+                    w.org.as_str(),
+                    w.country.as_str(),
+                    w.net_range.as_str(),
+                ]
+                .into_iter()
+                .filter(|p| !p.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · ");
+                ("whois", text, theme::text())
+            }
+            None => (
+                "whois",
+                "– · requested, no answer yet".into(),
+                theme::muted(),
+            ),
+        },
+    };
+    rows.push(whois);
+    rows
 }
 
 /// The resolver probe's learned p50 baseline, when the engine has one.

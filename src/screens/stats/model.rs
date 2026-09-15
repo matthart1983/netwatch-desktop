@@ -414,6 +414,32 @@ pub fn rtt_samples(s: &Snapshot) -> (Vec<f64>, &'static str) {
     (sockets, source)
 }
 
+/// The rtt panel's figures: sorted handshake samples, the bars drawn from
+/// them, and the metadata. Handshake history is session-wide, so the
+/// window selector doesn't apply and the metadata says `session` first.
+pub struct Rtt {
+    pub samples: Vec<f64>,
+    pub bins: Vec<f64>,
+    pub meta: String,
+}
+
+pub fn rtt(s: &Snapshot) -> Rtt {
+    let (mut samples, source) = rtt_samples(s);
+    samples.retain(|v| v.is_finite() && *v >= 0.0);
+    samples.sort_by(|a, b| a.total_cmp(b));
+    let meta = format!(
+        "session · {source} · {} sample{}",
+        grouped(samples.len() as u64),
+        if samples.len() == 1 { "" } else { "s" }
+    );
+    let bins = histogram(&samples);
+    Rtt {
+        samples,
+        bins,
+        meta,
+    }
+}
+
 pub const AXIS_MIN_MS: f64 = 0.1;
 pub const AXIS_MAX_MS: f64 = 300.0;
 pub const BINS: usize = 24;
@@ -435,35 +461,14 @@ pub fn bin_floor(bin: usize) -> f64 {
     10f64.powf(lo + (hi - lo) * bin as f64 / BINS as f64)
 }
 
-/// DNS latency bucket edges from `DnsAnalytics::latency_buckets`.
-const DNS_EDGES: [(f64, f64); 8] = [
-    (AXIS_MIN_MS, 5.0),
-    (5.0, 10.0),
-    (10.0, 25.0),
-    (25.0, 50.0),
-    (50.0, 100.0),
-    (100.0, 250.0),
-    (250.0, 500.0),
-    (500.0, 1000.0),
-];
-
-/// Histogram counts per log bin: exact samples land in their bin; DNS
-/// bucket counts are spread evenly over the bins their range covers.
-pub fn histogram(samples: &[f64], dns: &[u64; 8]) -> Vec<f64> {
+/// Histogram counts per log bin over exact handshake samples, the same
+/// samples the percentiles come from. DNS latency is not mixed in: its
+/// buckets are coarse ranges, and spreading them over log bins would draw
+/// bars where no sample exists.
+pub fn histogram(samples: &[f64]) -> Vec<f64> {
     let mut bins = vec![0.0; BINS];
     for ms in samples {
         bins[bin_of(*ms)] += 1.0;
-    }
-    for ((lo, hi), count) in DNS_EDGES.iter().zip(dns) {
-        if *count == 0 {
-            continue;
-        }
-        let first = bin_of(*lo);
-        let last = bin_of(hi * 0.999).max(first);
-        let share = *count as f64 / (last - first + 1) as f64;
-        for b in &mut bins[first..=last] {
-            *b += share;
-        }
     }
     bins
 }

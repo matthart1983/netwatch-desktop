@@ -157,14 +157,11 @@ fn remote_side_falls_back_to_service_port() {
 #[test]
 fn histogram_percentiles_and_axis() {
     let samples = vec![0.4, 0.5, 66.0, 184.0];
-    let bins = histogram(&samples, &[0; 8]);
+    let bins = histogram(&samples);
     assert_eq!(bins.iter().sum::<f64>(), 4.0);
     assert_eq!(bin_of(0.01), 0);
     assert_eq!(bin_of(10_000.0), BINS - 1);
     assert!(bin_floor(bin_of(184.0)) >= 100.0);
-    let dns = [0, 0, 0, 0, 0, 0, 0, 4];
-    let with_dns = histogram(&[], &dns);
-    assert!((with_dns.iter().sum::<f64>() - 4.0).abs() < 1e-9);
     assert_eq!(percentile(&samples, 0.5), Some(0.5));
     assert_eq!(percentile(&samples, 0.99), Some(184.0));
     assert_eq!(percentile(&[], 0.5), None);
@@ -254,6 +251,24 @@ fn window_bytes_integrates_non_loopback_history() {
     let (rx, tx) = summed_history(&s, Some(300.0));
     assert_eq!(rx.len(), 300);
     assert_eq!(tx[0], 500.0);
+}
+
+#[test]
+fn rtt_plots_handshakes_only_and_says_session() {
+    let mut s = fixture();
+    // DNS buckets must not add bars: percentiles and bars share samples.
+    let mut dns = (*s.dns_analytics).clone();
+    dns.latency_buckets = [0, 0, 0, 0, 0, 0, 0, 40];
+    s.dns_analytics = Arc::new(dns);
+    let rtt = rtt(&s);
+    assert_eq!(rtt.samples, vec![0.4, 66.0, 184.0]);
+    assert_eq!(rtt.bins.iter().sum::<f64>(), 3.0);
+    for v in &rtt.samples {
+        assert!(rtt.bins[bin_of(*v)] >= 1.0);
+    }
+    assert!(rtt.meta.starts_with("session · tcp handshakes · 3 samples"));
+    let empty = super::model::rtt(&Snapshot::empty());
+    assert!(empty.samples.is_empty() && empty.bins.iter().all(|b| *b == 0.0));
 }
 
 #[test]
@@ -355,6 +370,11 @@ fn keys_cycle_window_toggle_unit_export_and_persist() {
         assert_eq!(screen.unit, Unit::Frames);
         assert!(screen.key(Key::Char('e'), &mut cx));
         assert!(!screen.key(Key::Char('x'), &mut cx));
+        let keys = screen.keys(&cx);
+        for k in [']', '[', 'u', 'e'] {
+            assert!(keys.iter().any(|h| h.key == Key::Char(k)), "{k}");
+        }
+        assert!(screen.copy_text(&cx).is_none(), "stats has no selection");
     }
     match &h.commands[0] {
         Command::ExportCsv { label, csv } => {
