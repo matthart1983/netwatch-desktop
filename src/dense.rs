@@ -15,8 +15,6 @@ use std::collections::{HashMap, VecDeque};
 /// Seconds of rate and probe history the shared collectors retain. Graphs
 /// span exactly this, so a full history fills the plot edge to edge.
 const RETAINED: f64 = netwatch::app::HISTORY_WINDOW_SECS as f64;
-/// Text size range for the Text menu and Ctrl +/−.
-pub const TEXT_SIZES: std::ops::RangeInclusive<f32> = 12.0..=28.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Panel {
@@ -41,7 +39,6 @@ impl Panel {
 }
 pub struct Dense {
     pub zoom: Option<Panel>,
-    pub text_size: f32,
     /// Unattributed listeners collapse to one header row until expanded.
     pub listeners_expanded: bool,
     /// How box 4 groups sockets (`g` cycles).
@@ -66,7 +63,6 @@ impl Default for Dense {
     fn default() -> Self {
         Self {
             zoom: None,
-            text_size: 16.0,
             listeners_expanded: false,
             group: connections::GroupBy::Process,
             toggled: Default::default(),
@@ -160,7 +156,7 @@ impl Dense {
     }
 
     fn small(&self) -> f32 {
-        self.text_size - 1.0
+        theme::LABEL
     }
     pub fn draw(
         &mut self,
@@ -171,7 +167,7 @@ impl Dense {
         paused: bool,
     ) -> bool {
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-        theme::dense_style(ui, self.text_size);
+        theme::dense_style(ui);
         let area = ui.available_rect_before_wrap();
         let rectangles = layout(area);
         let mut zoom = None;
@@ -292,7 +288,7 @@ impl Dense {
             });
         };
         line(ui, true);
-        let height = (ui.available_height() - self.text_size - 8.0).max(64.0);
+        let height = (ui.available_height() - theme::DATA - 8.0).max(64.0);
         self.net.sample_pixels = None;
         self.net.draw(
             ui,
@@ -371,7 +367,7 @@ impl Dense {
         let header_height = small + 6.0;
         let row_height = ((ui.available_height() - header_height - 6.0) / rows.len().max(1) as f32
             - ui.spacing().item_spacing.y)
-            .clamp(self.text_size + 6.0, self.text_size * 6.0);
+            .clamp(theme::DATA + 6.0, theme::DATA * 6.0);
         egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
             if rows.is_empty() { ui.label("Waiting for interface counters"); return; }
             ui.horizontal(|ui| {
@@ -483,10 +479,10 @@ impl Dense {
             (available * 0.22).max(120.0),
         );
         let header_height = small + 6.0;
-        let footer = self.text_size + 10.0;
+        let footer = theme::DATA + 10.0;
         let row_height = ((ui.available_height() - header_height - footer) / 3.0
             - ui.spacing().item_spacing.y)
-            .clamp(self.text_size + 6.0, self.text_size * 3.5);
+            .clamp(theme::DATA + 6.0, theme::DATA * 3.5);
         egui::ScrollArea::both()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -568,7 +564,7 @@ impl Dense {
         animate: bool,
     ) -> bool {
         let small = self.small();
-        let row_height = self.text_size + 6.0;
+        let row_height = theme::DATA + 6.0;
         let row_stride = row_height + ui.spacing().item_spacing.y;
         let (rows, groups) = connections::grouped_by(s, self.group);
         // Headers and sockets share the virtualized row height. A group of

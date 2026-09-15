@@ -480,9 +480,10 @@ pub fn rule_state(rule: &rules::Rule, d: &DiagnoseSnapshot) -> (&'static str, Av
         (_, Some(Availability::Learning)) => ("learning", Availability::Learning),
         (_, Some(Availability::Stale)) => ("stale", Availability::Stale),
         (_, Some(Availability::Unsupported)) => ("unsupported", Availability::Unsupported),
-        (_, Some(Availability::NotMeasured)) | (_, None) => {
-            ("unmeasured", Availability::NotMeasured)
+        (_, Some(status)) if status != Availability::NotMeasured => {
+            (status.label(), status.clone())
         }
+        (_, _) => ("unmeasured", Availability::NotMeasured),
     }
 }
 

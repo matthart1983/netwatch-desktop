@@ -79,7 +79,7 @@ pub fn availability_color(a: &Availability) -> Color32 {
     match a {
         Availability::Available => theme::good(),
         Availability::Learning | Availability::Stale => theme::warn(),
-        Availability::NotMeasured | Availability::Unsupported => theme::muted(),
+        _ => theme::muted(),
     }
 }
 
@@ -1039,6 +1039,7 @@ fn coverage_panel(ui: &mut Ui, rect: Rect, d: &DiagnoseSnapshot, focused: bool) 
                             Availability::NotMeasured => "not measured",
                             Availability::Unsupported => "planned",
                             Availability::Stale => "stale",
+                            ref other => other.label(),
                         };
                         ui_kit::paint_text(
                             ui,

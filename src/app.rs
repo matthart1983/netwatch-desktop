@@ -97,8 +97,6 @@ pub struct DesktopApp {
     /// `raw_input_hook`), delivered as shell keys instead.
     tab_presses: usize,
     started: Instant,
-    /// Dense ran at zoom 1.0 last frame; restore the saved zoom on leaving.
-    dense_zoomed_out: bool,
     view: View,
     pub dense: crate::dense::Dense,
     lite: crate::lite::Lite,
@@ -167,10 +165,6 @@ impl DesktopApp {
         let mut dense = crate::dense::Dense::default();
         dense.group = crate::connections::GroupBy::from_name(&prefs.dense_group)
             .unwrap_or(crate::connections::GroupBy::Process);
-        dense.text_size = prefs.dense_text.clamp(
-            *crate::dense::TEXT_SIZES.start(),
-            *crate::dense::TEXT_SIZES.end(),
-        );
         theme::set(theme::by_name(&prefs.theme));
         Self {
             backend,
@@ -187,7 +181,6 @@ impl DesktopApp {
             toggle_freeze: false,
             tab_presses: 0,
             started: Instant::now(),
-            dense_zoomed_out: false,
             view: options.view.unwrap_or_else(|| View::from_name(&prefs.view)),
             dense,
             lite: Default::default(),
@@ -1081,7 +1074,6 @@ impl DesktopApp {
                 self.prefs.tabs.insert(screen.tab().name().into(), state);
             }
         }
-        self.prefs.dense_text = self.dense.text_size;
         self.record_window(ctx);
         let _ = self.prefs.save();
         self.prefs_dirty = false;
@@ -1112,20 +1104,13 @@ impl eframe::App for DesktopApp {
             theme::apply(ctx);
             self.theme_applied = Some(theme::current().name);
         }
-        // Dense sizes its own text (ctrl ± there changes it), so the UI zoom
-        // is 1.0 while it's showing; the saved zoom returns with full and lite.
+        // Every view shares the same text scale and whole-interface zoom.
         let zoom = ctx.zoom_factor();
-        if self.view == View::Dense {
-            if (zoom - 1.0).abs() > 0.001 {
-                ctx.set_zoom_factor(1.0);
-            }
-        } else if self.dense_zoomed_out {
-            ctx.set_zoom_factor(self.prefs.zoom.clamp(0.75, 2.5));
-        } else if (zoom - self.prefs.zoom).abs() > 0.001 {
+        if (zoom - self.prefs.zoom).abs() > 0.001 {
             self.prefs.zoom = zoom;
             self.prefs_dirty = true;
         }
-        self.dense_zoomed_out = self.view == View::Dense;
+        ctx.options_mut(|o| o.zoom_with_keyboard = true);
         ctx.request_repaint_after(Duration::from_millis(if self.shared.controls.animate {
             100
         } else {
@@ -1203,31 +1188,6 @@ impl eframe::App for DesktopApp {
             for key in pending {
                 self.dispatch(ctx, key, snapshot.as_deref());
             }
-            if self.view == View::Dense {
-                ctx.options_mut(|o| o.zoom_with_keyboard = false);
-                ctx.input_mut(|i| {
-                    use egui::{KeyboardShortcut, Modifiers};
-                    let size = &mut self.dense.text_size;
-                    let shortcut = |key| KeyboardShortcut::new(Modifiers::COMMAND, key);
-                    if i.consume_shortcut(&shortcut(egui::Key::Plus))
-                        || i.consume_shortcut(&shortcut(egui::Key::Equals))
-                    {
-                        *size += 1.0;
-                    }
-                    if i.consume_shortcut(&shortcut(egui::Key::Minus)) {
-                        *size -= 1.0;
-                    }
-                    if i.consume_shortcut(&shortcut(egui::Key::Num0)) {
-                        *size = crate::dense::Dense::default().text_size;
-                    }
-                    *size = size.clamp(
-                        *crate::dense::TEXT_SIZES.start(),
-                        *crate::dense::TEXT_SIZES.end(),
-                    );
-                });
-            } else {
-                ctx.options_mut(|o| o.zoom_with_keyboard = true);
-            }
         } else {
             self.clicked.clear();
         }
@@ -1261,7 +1221,6 @@ impl eframe::App for DesktopApp {
                     self.prefs.tabs.insert(screen.tab().name().into(), state);
                 }
             }
-            self.prefs.dense_text = self.dense.text_size;
             let _ = self.prefs.save();
         }
     }
@@ -1650,14 +1609,6 @@ impl DesktopApp {
             {
                 nav.push(Nav::ToggleFade);
             }
-            if self.view == View::Dense {
-                ui.add(
-                    egui::Slider::new(&mut self.dense.text_size, crate::dense::TEXT_SIZES)
-                        .step_by(1.0)
-                        .text("dense text")
-                        .suffix(" px"),
-                );
-            }
             ui_kit::section(ui, "theme");
             ui.horizontal_wrapped(|ui| {
                 for palette in theme::palettes() {
@@ -1938,7 +1889,7 @@ impl DesktopApp {
     }
 
     fn draw_dense(&mut self, ctx: &egui::Context, s: Option<&Snapshot>, live: Option<&Snapshot>) {
-        let size = self.dense.text_size;
+        let size = theme::DATA;
         egui::TopBottomPanel::top("title_bar")
             .exact_height(size + 16.0)
             .frame(
@@ -1947,7 +1898,7 @@ impl DesktopApp {
                     .inner_margin(egui::vec2(14.0, 0.0)),
             )
             .show(ctx, |ui| {
-                theme::dense_style(ui, size);
+                theme::dense_style(ui);
                 ui.horizontal_centered(|ui| {
                     ui.label(ui_kit::strong("◉ netwatch", size, theme::accent()));
                     ui.label(ui_kit::mono("— dense", size, theme::text()));

@@ -364,19 +364,12 @@ pub fn apply(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
-pub fn dense_style(ui: &mut egui::Ui, size: f32) {
+/// Dense changes spacing, while inheriting the main view's type scale.
+pub fn dense_style(ui: &mut egui::Ui) {
     let style = ui.style_mut();
-    for (kind, font) in &mut style.text_styles {
-        font.size = if *kind == egui::TextStyle::Small {
-            size - 1.0
-        } else {
-            size
-        };
-        font.family = FontFamily::Monospace;
-    }
     style.spacing.item_spacing = egui::vec2(5.0, 2.0);
     style.spacing.button_padding = egui::vec2(4.0, 1.0);
-    style.spacing.interact_size.y = size + 5.0;
+    style.spacing.interact_size.y = DATA + 5.0;
 }
 
 pub fn issue_color(severity: Option<netwatch::diagnose::issue::Severity>) -> Color32 {

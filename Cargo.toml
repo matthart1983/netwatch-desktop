@@ -1,6 +1,6 @@
 [package]
 name = "netwatch-desktop"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Matt Hartley <matthew.t.hartley@gmail.com>"]
 description = "Native desktop companion for netwatch — Workbench shell over the same collectors as the TUI."

@@ -74,6 +74,25 @@ fn click(point: egui::Pos2, pressed: bool) -> Vec<egui::Event> {
         },
     ]
 }
+
+#[test]
+fn dense_keeps_the_main_views_type_scale_at_each_zoom() {
+    let ctx = egui::Context::default();
+    theme::apply(&ctx);
+    let main_fonts = ctx.style().text_styles.clone();
+    for zoom in [1.0, 1.15, 1.5, 2.0] {
+        ctx.set_zoom_factor(zoom);
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                theme::dense_style(ui);
+                assert_eq!(ui.style().text_styles, main_fonts);
+                assert_eq!(ui.ctx().zoom_factor(), zoom);
+                assert_eq!(egui::TextStyle::Body.resolve(ui.style()).size, theme::DATA);
+                assert_eq!(egui::TextStyle::Small.resolve(ui.style()).size, theme::META);
+            });
+        });
+    }
+}
 #[test]
 fn four_boxes_fit_minimum_and_large_windows_without_overlap() {
     for size in [
@@ -192,14 +211,19 @@ fn large_connection_table_virtualizes_rows_and_scrolls_to_keyboard_selection() {
     h.render(&s, size, vec![]);
     let output = h.render(&s, size, vec![]);
     assert_eq!(h.selection.id, Some((&s.connections[1199]).into()));
-    let visible_texts = output
+    let visible_processes = output
         .shapes
         .iter()
-        .filter(|s| matches!(&s.shape, egui::Shape::Text(_)))
+        .filter(
+            |s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().starts_with("process-")),
+        )
         .count();
+    // Bound rows by viewport capacity, not all labels across the four boxes:
+    // smaller shared type naturally makes more rows and columns visible.
+    let capacity = (size.y / (theme::DATA + 6.0)).ceil() as usize + 3;
     assert!(
-        visible_texts < 250,
-        "virtualized rows must bound text work, got {visible_texts}"
+        visible_processes <= capacity,
+        "virtualized rows must fit the viewport, got {visible_processes}"
     );
     text_point(&output, "process-1199");
 }

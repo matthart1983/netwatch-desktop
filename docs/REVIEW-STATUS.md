@@ -118,10 +118,10 @@ partial rows below; none are implied complete by this egress work.
 | DEL-12, PAR-5 | Implemented | Working tree: `x` reviews selected rule removal; `y` confirms. |
 | DEL-4, DEL-3 | Open | Align strip/apply selection and implement in-app report preview on `o`; new workflow does not fix these. |
 | PAR-2 | Open | AI collector status/errors and regenerate action. |
-| DEL-14, DEL-10, DEL-22 | Partial | Dense zoom is 1.0; meter priorities, axis overlap and grouped-child rail still need checking. |
+| DEL-14, DEL-10, DEL-22 | Partial | Typography follow-up: dense now shares full-view type sizes and UI zoom, as requested. Native comparison checked at 1280×760; meter priorities and grouped-child rail still need checking. |
 | DEL-7, DEL-15 | Recheck | Lite selection scrolling and DEMO marker. |
 | DEL-18, DEL-19 | Partial | Egress diff now wraps/scrolls without eliding entries; Diagnose minimum-size layout still needs checking. |
-| DEL-9 | Open | DENSE.md still calls lite unimplemented and describes obsolete view/pause keys. |
+| DEL-9 | Implemented | Typography follow-up also refreshes DENSE.md view, font, pause and minimum-size documentation. |
 
 ## Low findings retained
 

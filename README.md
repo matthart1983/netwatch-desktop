@@ -37,7 +37,7 @@ It is not a remote dashboard. There is no server and no second engine. The app l
 
 ## Building
 
-For **v0.1.0**, use the matching `netwatch-desktop-v0.1.0-source.tar.gz` asset from [Releases](https://github.com/matthart1983/netwatch-desktop/releases/tag/v0.1.0). It includes both repositories' source in the required layout, including the netwatch changes this desktop build needs. Extract it, enter `netwatch-desktop`, and run `cargo build --release --locked`.
+For **v0.1.1**, use the matching `netwatch-desktop-v0.1.1-source.tar.gz` asset from [Releases](https://github.com/matthart1983/netwatch-desktop/releases/tag/v0.1.1). It includes both repositories' source in the required layout, including the netwatch changes this desktop build needs. Extract it, enter `netwatch-desktop`, and run `cargo build --release --locked`.
 
 For development, the app depends on the netwatch crate by path. Check both repositories out side by side, using a netwatch revision with the Diagnose APIs required by this checkout:
 
@@ -157,7 +157,7 @@ Global keys work on every tab unless a sheet is open.
 | `,` | settings |
 | `?` | every key for the current tab, or for dense and lite in those views |
 | `q` | quit |
-| `ctrl +` / `ctrl -` / `ctrl 0` | zoom the interface (in dense view, the text size) |
+| `ctrl +` / `ctrl -` / `ctrl 0` | zoom the interface (shared across all views) |
 
 ## The ten tabs
 
@@ -197,7 +197,7 @@ All three views run on the same backend. Switching views never restarts collecto
 
 ![Dense view](docs/screenshots/dense.png)
 
-**Dense** packs four boxes: mirrored throughput with session totals, interfaces, health with rtt budget meters, and connections with the selected socket's kernel state above the table. `1`-`4` zoom a box. Dense runs at interface zoom 1.0 and sizes its own text. In the connections box `g` cycles grouping, `space` and `Z` fold groups. Text size is separate from the interface zoom (`ctrl +` / `ctrl -`, or the menu). See [docs/DENSE.md](docs/DENSE.md).
+**Dense** packs four boxes: mirrored throughput with session totals, interfaces, health with rtt budget meters, and connections with the selected socket's kernel state above the table. `1`-`4` zoom a box. Dense uses the same text sizes and interface zoom as full and lite. In the connections box `g` cycles grouping, `space` and `Z` fold groups. `ctrl +` / `ctrl -` adjusts the shared interface zoom; switching views keeps text the same size. See [docs/DENSE.md](docs/DENSE.md).
 
 <img src="docs/screenshots/lite.png" alt="Lite view" width="540">
 
@@ -228,7 +228,7 @@ The UI uses IBM Plex Mono throughout and IBM Plex Sans for first-run prose, with
 Two files:
 
 - `~/.config/netwatch/config.toml` is netwatch's own config, shared with the TUI: theme, graph style, refresh rate, capture interface, BPF filter, GeoIP, alerts, AI insights, sandbox mode and so on. Edit it with the settings sheet.
-- `~/.config/netwatch/desktop.toml` holds the desktop's layout: the last tab and view, theme, interface zoom, dense text size and grouping, dock height, the lite window size, per-tab choices (sort, grouping, filters) and recent palette commands. Set `NETWATCH_DESKTOP_PREFS` to use another path.
+- `~/.config/netwatch/desktop.toml` holds the desktop's layout: the last tab and view, theme, shared interface zoom, dense grouping, dock height, the lite window size, per-tab choices (sort, grouping, filters) and recent palette commands. Set `NETWATCH_DESKTOP_PREFS` to use another path.
 
 Exports go to `~/.cache/netwatch/exports/`. The egress policy lives at `~/.config/netwatch/egress-policy.toml`.
 

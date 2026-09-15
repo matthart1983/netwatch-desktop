@@ -389,7 +389,7 @@ impl Help {
                 ("d", "diagnose"),
                 ("R F", "arm · freeze flight recorder"),
                 ("e E", "export report · incident bundle"),
-                ("ctrl + −", "dense text size"),
+                ("ctrl + −", "UI zoom · shared with full and lite"),
                 ("V / L / esc", "full view · lite view · unzoom, then full"),
                 (&palette, "command palette"),
                 (", ? q", "settings · help · quit"),

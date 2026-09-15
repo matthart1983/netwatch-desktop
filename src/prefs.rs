@@ -13,11 +13,10 @@ pub struct Prefs {
     /// full · lite · dense
     pub view: String,
     pub theme: String,
-    /// Whole-interface zoom (Ctrl + / Ctrl − in full and lite views). The
+    /// Whole-interface zoom (Ctrl + / Ctrl − in every view). The
     /// spec's 12px type scale reads small on high-DPI laptop panels, so the
     /// default sits above 1.
     pub zoom: f32,
-    pub dense_text: f32,
     /// Dense box 4 grouping: none · host · process.
     pub dense_group: String,
     pub show_dock: bool,
@@ -41,7 +40,6 @@ impl Default for Prefs {
             view: "full".into(),
             theme: "dark".into(),
             zoom: 1.15,
-            dense_text: 16.0,
             dense_group: "process".into(),
             show_dock: true,
             dock_height: crate::theme::DOCK_HEIGHT,
@@ -85,6 +83,13 @@ impl Prefs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legacy_dense_text_does_not_override_shared_zoom() {
+        let prefs: Prefs = toml::from_str("view = 'dense'\nzoom = 1.4\ndense_text = 28.0").unwrap();
+        assert_eq!(prefs.zoom, 1.4);
+        assert_eq!(prefs.view, "dense");
+        assert!(!toml::to_string(&prefs).unwrap().contains("dense_text"));
+    }
     #[test]
     fn prefs_round_trip_and_tolerate_unknown_or_missing_fields() {
         let mut prefs = Prefs {
