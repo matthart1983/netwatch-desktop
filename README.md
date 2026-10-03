@@ -328,7 +328,7 @@ Exports go to `~/.cache/netwatch/exports/`, which only your user can open: the d
 ## Known limitations
 
 - Screen readers can read the navigator's tab list and little else. Most of the window is drawn text without accessibility labels.
-- In `dark` and `paper`, text and muted text pass 4.5:1 contrast, but the selected row's background is faint and a few status colours fall just short. The six terminal themes have lower contrast, and there is no high-contrast theme yet. Some status marks, such as the navigator's health dots and lite's rows, use colour alone.
+- In `dark` and `paper`, text and muted text pass 4.5:1 contrast, but the selected row's background is faint and a few status colours fall just short. The six terminal themes have lower contrast, and there is no high-contrast theme yet. Some status marks, such as the navigator's health dots and lite's rows, use colour alone. In the `☰ menu`, the circles and boxes of unselected choices and checkboxes are about 1.2:1 against the menu, so it's hard to see which are off; their labels are readable.
 - A capture grant takes effect on the next start, and the app doesn't say so yet.
 - The app doesn't refuse or warn when it runs as root.
 - The [sandbox](#sandbox) covers netwatch's runtime and workers, not the window's thread or the incident history worker.
