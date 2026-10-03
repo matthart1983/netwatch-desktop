@@ -131,7 +131,7 @@ pub(crate) fn footer_hints() -> Vec<Hint> {
     ]
 }
 
-/// Pads a panel body down to `bottom` so the panel fills its column.
+/// Space between panels, in points.
 const GAP: f32 = 8.0;
 /// Narrower than this, in points, the panels stack into one column.
 const ONE_COLUMN: f32 = 440.0;
@@ -148,6 +148,7 @@ fn talkers_height(rows: usize) -> f32 {
     52.0 + 20.0 * rows.clamp(3, 8) as f32
 }
 
+/// Pads a panel body down to `bottom` so the panel fills its column.
 fn fill_to(ui: &mut Ui, bottom: f32) {
     let rest = bottom - ui.min_rect().bottom();
     if rest > 0.0 {
