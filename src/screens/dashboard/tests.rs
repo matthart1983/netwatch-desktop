@@ -63,6 +63,30 @@ fn waiting_stale_failed_and_nominal_stay_distinct() {
 }
 
 #[test]
+fn rtt_card_says_why_its_probe_is_unmeasured() {
+    // The common case: ICMP blocked and no TCP port answering on the
+    // gateway, while DNS measures over UDP. The loss card takes DNS's
+    // figure, so the gateway card is the one place left to say why.
+    let mut s = fixture();
+    let h = Arc::make_mut(&mut s.health);
+    h.completed.gateway = Some(s.observed_at);
+    h.gateway_rtt_ms = None;
+    h.gateway_loss = Loss::Unmeasured("icmp is blocked here and the gateway answers no tcp port");
+    let gateway = &rtt_cards(&s)[0];
+    assert_eq!(gateway.status, vec!["unmeasured".to_string()]);
+    assert_eq!(
+        gateway.baseline,
+        "icmp is blocked here and the gateway answers no tcp port · 192.0.2.1"
+    );
+    assert_eq!(loss_card(&s).status, vec!["nominal".to_string()]);
+    // Measured again, the card goes back to its baseline.
+    let h = Arc::make_mut(&mut s.health);
+    h.gateway_rtt_ms = Some(1.2);
+    h.gateway_loss = Loss::Measured(0.0);
+    assert!(!rtt_cards(&s)[0].baseline.contains("icmp"));
+}
+
+#[test]
 fn loss_card_has_no_figure_for_an_unmeasured_probe_and_says_why() {
     let mut s = Snapshot::empty();
     let h = Arc::make_mut(&mut s.health);

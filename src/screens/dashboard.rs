@@ -7,6 +7,7 @@ mod tests;
 use super::connections::{self as conns, inspector, model, Col};
 use crate::backend::{Command, Snapshot};
 use crate::graphs::{self, Graph, Options, Scale, Unit};
+use crate::probe::ProbeState;
 use crate::shell::{short_time, Cx, Hint, Key, Nav, Screen, Tab};
 use crate::{theme, ui_kit};
 use egui::{pos2, text::LayoutJob, vec2, Align, Color32, FontId, Rect, Sense, TextFormat, Ui};
@@ -157,11 +158,21 @@ pub fn rtt_cards(s: &Snapshot) -> [Card; 3] {
         } else {
             address.clone().unwrap_or_default()
         };
+        // A probe that could not be sent has no rtt to set against a
+        // baseline; the card says why instead, as dense and lite do.
+        let unmeasured = match s.probe(target).state {
+            ProbeState::Unmeasured(why) => Some(format!(
+                "{why} · {}",
+                address.as_deref().unwrap_or("not configured")
+            )),
+            _ => None,
+        };
         let baseline = s
             .diagnose
             .baselines
             .iter()
             .find(|b| b.1 == metric && (b.0 == subject || target == "internet"))
+            .filter(|_| unmeasured.is_none())
             .map(|b| {
                 format!(
                     "base {}ms · σ {:.1} · {}",
@@ -170,6 +181,7 @@ pub fn rtt_cards(s: &Snapshot) -> [Card; 3] {
                     address.as_deref().unwrap_or("–")
                 )
             })
+            .or(unmeasured)
             .unwrap_or_else(|| {
                 let readiness = s.baselines[match target {
                     "gateway" => 0,
