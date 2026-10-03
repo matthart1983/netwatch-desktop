@@ -1,17 +1,23 @@
 # netwatch desktop
 
-A native desktop app for [netwatch](https://github.com/matthart1983/netwatch). It runs the same collectors, diagnose engine and egress linter as the terminal tool, in a window, with a mouse, a command palette and room to show more than 80 columns can hold.
+See which programs on this computer use the network, and what's wrong with it. Everything runs on this machine, and it uploads nothing unless you turn on online GeoIP lookups or AI insights.
 
 ![The dashboard. All screenshots are drawn from synthetic data](docs/screenshots/dashboard.png)
 
-It is not a remote dashboard. There is no server and no second engine. The app links the `netwatch` crate, starts its runtime on a background thread, and draws what that runtime sees on this machine.
+netwatch desktop is the window version of [netwatch](https://github.com/matthart1983/netwatch), the terminal network monitor. It links the same `netwatch` library and runs the same collectors, diagnose engine and egress linter, so the two agree about what they see. In a window you also get a mouse, a command palette, text you can make larger, and room for more than 80 columns. You don't need the terminal tool installed. If you have it, both read the same `config.toml`, so a theme or graph style set in one shows in the other.
+
+It is not a remote dashboard. There is no server and no second engine. The app starts netwatch's runtime on a background thread and draws what that runtime sees on this machine.
+
+0.2.0 is the first public release. Linux has binaries. macOS and Windows build from source and are experimental.
 
 ## Contents
 
-- [What you get](#what-you-get)
+- [Install](#install)
+- [Text size](#text-size)
 - [Building](#building)
 - [Running](#running)
 - [Permissions](#permissions)
+- [What it sends over the network](#what-it-sends-over-the-network)
 - [The window](#the-window)
 - [Keys](#keys)
 - [The ten tabs](#the-ten-tabs)
@@ -19,21 +25,71 @@ It is not a remote dashboard. There is no server and no second engine. The app l
 - [Sheets](#sheets)
 - [Themes and graphs](#themes-and-graphs)
 - [Settings and saved state](#settings-and-saved-state)
+- [Known limitations](#known-limitations)
 - [How it is built](#how-it-is-built)
 - [Development](#development)
-- [Known gaps](#known-gaps)
+- [Security, contributing and changes](#security-contributing-and-changes)
 - [License](#license)
 
-## What you get
+## Install
 
-- Ten tabs: dashboard, connections, interfaces, packets, stats, topology, timeline, processes, diagnose and egress.
-- Every socket with its owning process and the diagnose engine's verdict (bufferbloat, zero-window, retrans-burst and so on), grouped by process or host, with kernel `tcp_info` in a side inspector.
-- A packet list with a display filter, layered decode, hex, and a stream inspector. Export any filtered view to pcap.
-- Diagnose laid out as issue, probable cause, remediation and the condition that closes it, with a chronology of what happened in what order.
-- Egress policy: learned destinations per process, drift, and the TOML diff before anything is written.
-- A flight recorder you can arm, freeze and export as an incident bundle.
-- Three views of the same running backend. Full is the workbench, lite is a small always-on-top window, dense is four boxes packed with numbers.
-- Eight themes, a btop-style dot graph look (or solid bars), and a command palette that prints the key for everything it runs.
+### Linux
+
+Download a package from the [releases page](https://github.com/matthart1983/netwatch-desktop/releases). The x86_64 builds need glibc 2.35 or newer: Ubuntu 22.04, Debian 12, Fedora 36 or anything later. Each release lists its files' checksums in `SHA256SUMS`; check a download with `sha256sum -c --ignore-missing SHA256SUMS`.
+
+On Debian or Ubuntu:
+
+```sh
+sudo apt install ./netwatch-desktop_*_amd64.deb
+```
+
+On Fedora and other RPM distributions:
+
+```sh
+sudo dnf install ./netwatch-desktop-*.x86_64.rpm
+```
+
+Both packages install `/usr/bin/netwatch-desktop`, add it to your desktop's app list, and grant it the one capability packet capture needs. [Permissions](#permissions) says which and why.
+
+The tarball needs libpcap, packaged as `libpcap0.8` on Debian and Ubuntu and as `libpcap` on Fedora. Extract it, grant capture to the binary, and run it:
+
+```sh
+tar xf netwatch-desktop-*-linux.tar.gz
+sudo setcap cap_net_raw=ep netwatch-desktop
+./netwatch-desktop
+```
+
+On first launch a sheet shows what works, what needs a grant and the exact command for it. Press `↵` to carry on.
+
+### From source
+
+With Rust and the libraries listed under [Building](#building):
+
+```sh
+cargo install --locked netwatch-desktop
+```
+
+### macOS and Windows
+
+There are no binaries yet. Both build from source, as described under [Building](#building). They are experimental. CI builds and tests them, but nobody has tried them by hand.
+
+## Text size
+
+You can make everything in the window larger, from 100% to 300%. The default is 115%. The first-run sheet starts with a choice of Normal at 115%, Large at 150% and Larger at 200%. The sheet itself changes size as you pick, so you see the result before going on.
+
+To change it later, use any of these:
+
+- the `☰ menu` at the top right: `−`, `+`, `reset`, or a size from the list
+- the command palette, opened with `ctrl K` or `:`. Type "text size", "zoom", "font" or "bigger"
+- settings, opened with `,`, in the "this app" group
+- `ctrl +` and `ctrl −`, `ctrl` with the scroll wheel, or a trackpad pinch. `ctrl 0` goes back to 115%. On macOS, use `⌘`
+- in lite view, its own `☰ menu`
+
+Every change applies at once in all three views, shows the new size briefly, and is saved for next time. To start large without saving it, for example from a launcher set up for someone else, use `netwatch-desktop --text-size 150`.
+
+As the text grows, the inspector on the right moves into a sheet you open with `I`. Next the navigator keeps only the tab names, and last it becomes a column of digits. Panels scroll rather than shrink or disappear. On a 1366×768 laptop the tab names stay written out up to 200%.
+
+![The ☰ menu's text size controls, at 150%](docs/screenshots/text-size-150.png)
 
 ## Building
 
@@ -45,7 +101,7 @@ cd netwatch-desktop
 cargo build --release --locked
 ```
 
-You need a recent stable Rust toolchain and the same system libraries netwatch needs, plus what eframe needs to open a window.
+You need Rust 1.88 or newer and the same system libraries netwatch needs, plus what eframe needs to open a window.
 
 On Fedora:
 
@@ -59,7 +115,7 @@ On Debian or Ubuntu:
 sudo apt install libpcap-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev
 ```
 
-On macOS, the Xcode command line tools are enough.
+On macOS, the Xcode command line tools should be enough. On Windows, install the [Npcap SDK](https://npcap.com) and set `LIB` to its `Lib\x64` directory to build, and Npcap itself to capture.
 
 This build turns off netwatch's eBPF attribution (`default-features = false`), so there is no kernel-capability dependency beyond packet capture.
 
@@ -81,7 +137,7 @@ Useful flags:
 
 | flag | what it does |
 |---|---|
-| `--demo` | Runs the real runtime with the diagnose demo scenario and a seeded packet capture. Good for seeing every screen populated. |
+| `--demo` | Adds netwatch's diagnose demo scenario and a seeded packet capture on top of this machine's live data. Good for seeing every screen populated, but your own sockets, addresses and processes are still there. |
 | `--tab <name>` | Opens on a tab: `dashboard`, `connections`, `interfaces`, `packets`, `stats`, `topology`, `timeline`, `processes`, `diagnose`, `egress`. |
 | `--view full\|lite\|dense` | Starts in a view. `--lite` is short for `--view lite`. |
 | `--no-sandbox` / `--sandbox-strict` | Overrides config.toml's `sandbox` for this launch, as in the TUI. |
@@ -91,7 +147,8 @@ Useful flags:
 | `--theme <name>` | Starts with a palette (see [themes](#themes-and-graphs)). |
 | `--window-size WxH` | Sets the initial window size in logical pixels. |
 | `--app-chrome` | Draws the app's own title bar and window controls instead of the system's. |
-| `--graph-preview` | Runs on a synthetic snapshot with no collectors. Used for graph and layout checks. |
+| `--ephemeral` | Neither reads nor writes the saved layout (`desktop.toml`), and skips the first-run sheet. |
+| `--graph-preview` | Runs on a synthetic snapshot with no collectors and no probes. Used for graph and layout checks. |
 | `--check-runtime` | Starts the runtime headless, prints interface, capture, diagnose coverage, socket and PID counts and the capability report, then exits. |
 | `--screenshot <path>` | Saves a PNG of the window after about three seconds and exits. Runs with this flag neither read nor write saved layout. |
 | `--help` / `--version` | Usage or version. Unknown flags and bad values are rejected. |
@@ -101,7 +158,7 @@ If the runtime fails to start (for example `sandbox = "strict"` where the platfo
 `--check-runtime` is the quickest way to find out what the app can see on a machine:
 
 ```
-interface: wlp192s0
+interface: wlan0
 counters only · Capture failed: libpcap error: ... CAP_NET_RAW may be required
 no visible findings · 12/25 rule inputs available · 0 learning · 13 unavailable
 107 connections · 78 with a pid · 61 kernel TCP records
@@ -109,19 +166,47 @@ no visible findings · 12/25 rule inputs available · 0 learning · 13 unavailab
 
 ## Permissions
 
-Without packet capture the app still works. You get interface counters, the socket table with process attribution for processes your user can inspect, kernel TCP metrics, and active probes. Per-flow rates, the packet list, TLS and DNS decode, and handshake timing need capture.
+The app never asks for root and never raises its own privileges. Don't run it with `sudo`. It doesn't need it, and the layout and exports it writes in your home would end up owned by root. It doesn't warn about this yet.
 
-On Linux, give the binary the raw-socket capability once. It attaches to the file, so run it again after every rebuild:
+Without packet capture the app still works. You get interface counters, the socket table with process attribution for processes your user can inspect, kernel TCP metrics, and the probes described below. Per-flow rates, the packet list, TLS and DNS decode, and handshake timing need capture.
+
+On Linux, capture needs one capability, `cap_net_raw`. The .deb and .rpm grant it when they install. For the tarball or your own build, grant it to the binary:
 
 ```sh
 sudo setcap cap_net_raw=ep ./target/release/netwatch-desktop
 ```
 
+The grant belongs to that file, so a rebuild or a copy loses it and you grant it again. A running app doesn't pick up a new grant, so quit and start it again. This build has no eBPF backend. `cap_bpf` and `cap_perfmon` would add nothing, and the app doesn't ask for them.
+
 The first-run sheet shows what is ready, what needs a grant, and the exact command for the running executable. It opens on first launch and again if a capability that was ready goes missing. Press `↵` to continue without capture.
 
-netwatch confines its collector workers with Landlock. Socket ownership is read by a small thread that starts before confinement and only reads kernel `/proc` tables, so attribution works with the sandbox on. Sockets owned by other users' processes (root daemons) stay unattributed unless you run with more privilege.
+Sockets owned by other users' processes, such as root daemons, stay unattributed.
 
-Active health checks send DNS, reachability and STUN probes. Collection and analysis stay on the machine. Online GeoIP lookups and AI insights are off by default and say what they send before they send it.
+On macOS, which is experimental, capture reads `/dev/bpf*`. Only root can open it by default, and Wireshark's ChmodBPF is the usual way to give your user access. On Windows, also experimental, install [Npcap](https://npcap.com).
+
+### Sandbox
+
+On Linux, netwatch confines its runtime thread and the workers it starts with Landlock. They read only what they need and write only to netwatch's own directories. Network access isn't restricted. The window's own thread isn't confined, because it has to open the display and graphics, and neither is the worker that loads and exports diagnose incident history. A small thread that starts before confinement reads socket ownership from the kernel's `/proc` tables, so attribution works with the sandbox on. `--no-sandbox` and `--sandbox-strict` override `config.toml`'s `sandbox` setting for one launch.
+
+## What it sends over the network
+
+Collection and analysis stay on this machine, but the health checks are real traffic. With the default settings the app sends:
+
+- a ping to your gateway every few seconds, or a TCP connection where ping is blocked
+- a DNS query for the root zone to your resolver every few seconds. In the same cycle it asks your resolver and Cloudflare's 1.1.1.1 for `dns.google` and compares the answers, which catches captive portals and DNS interception
+- a ping to 1.1.1.1 every few seconds, or a TCP connection to its port 443 where ping is blocked
+- a STUN request to `stun.l.google.com` and `stun.cloudflare.com` about once a minute, to see how your NAT behaves
+- one traceroute to 1.1.1.1 each time the app starts, so topology has a path. You can't turn it off yet
+- reverse DNS lookups through your resolver for the addresses your machine talks to
+
+These only happen when you ask for them:
+
+- whois lookups with `W`, traceroutes with `T`, and the diagnose tests you run. Each test says what traffic it sends before you run it
+- probes of the services you list under `[[diagnose_targets]]` in `config.toml`, described in [docs/DIAGNOSE.md](docs/DIAGNOSE.md)
+- online GeoIP lookups, which send remote addresses to ip-api.com. `geoip_online` is off by default
+- AI insights, which send a network summary to the endpoint you configure. `insights_enabled` is off by default
+
+Each setting that sends something says so beside it in the settings sheet.
 
 ## The window
 
@@ -129,7 +214,7 @@ Active health checks send DNS, reachability and STUN probes. Collection and anal
 
 Every tab shares one frame:
 
-- The title bar has the breadcrumb (for example `connections › claude:443`), a command field that opens the palette, chips for recorder state, pause, open issues, blocked egress destinations and egress drift, the capture interface, and the menu.
+- The title bar has the breadcrumb (for example `connections › browser:443`), a command field that opens the palette, chips for recorder state, pause, open issues, blocked egress destinations and egress drift, the capture interface, and the menu.
 - The navigator on the left lists the ten tabs with live badges (socket count, packet rate, open issue count, blocked or drifting destinations). Under it is a network tree (this machine, gateway, dns, internet, interfaces) and the top processes. Clicking a node filters the current tab and adds it to the breadcrumb. `esc` removes it.
 - A status strip appears when an issue is open. It reads from the same issue list as the diagnose tab and disappears when things are healthy.
 - The inspector on the right follows the selection on tabs that have one (dashboard, connections, packets, processes, egress).
@@ -163,13 +248,7 @@ Global keys work on every tab unless a sheet is open.
 | `,` | settings |
 | `?` | every key for the current tab, or for dense and lite in those views |
 | `q` | quit |
-| `ctrl +` / `ctrl -` / `ctrl 0` | larger or smaller text, or back to 115% (shared across all views). `ctrl` + scroll and trackpad pinch also work |
-
-### Text size
-
-Text size scales the whole interface, from 100% to 300%, and is shared by all three views. Change it from the `☰` menu (`−`, `+`, `reset` and a list of sizes), the command palette (type "text size"), the "this app" group in settings, lite's own `☰ menu`, the picker at the top of the first-run sheet, or the keys above. Every change applies at once, says the new size, and is saved in `desktop.toml`. `--text-size` sets it for one launch.
-
-![The ☰ menu's text size controls, at 150%](docs/screenshots/text-size-150.png)
+| `ctrl +` / `ctrl -` / `ctrl 0` | larger or smaller text, or back to 115% (shared across all views). `ctrl` + scroll and trackpad pinch also work. See [Text size](#text-size) |
 
 ## The ten tabs
 
@@ -199,7 +278,7 @@ Each tab lists its own keys in the footer and in `?`.
 
 **9 diagnose.** An engine strip (inputs available, baselines ready or learning, rules live) so an empty issue list can be read correctly. Issues in severity order, the chronology, and a detail pane in report order: evidence, ranked probable causes with each check written out, remediation steps, and the condition that closes the issue. `↵` applies a fix where netwatch can (simulated in demo mode, never applied by a live desktop session), `a` acknowledges, `m` mutes for an hour, `o` writes `report.md`, `y` copies.
 
-The target strip expands to show configured services and their DNS, TCP, TLS and HTTP probe results. In **Tests and recovery**, each offered test describes its traffic and estimated cost before you run it; running tests and the latest results appear alongside it. **I've done this** records a manual remediation step and lets the engine check recovery, including re-running supporting tests after a minute. **What caused this issue?** saves your answer with the recorded incident when episode recording is enabled.
+The target strip expands to show configured services and their DNS, TCP, TLS and HTTP probe results. In **Tests and recovery**, each offered test describes its traffic and estimated cost before you run it; running tests and the latest results appear alongside it. **I've done this** records a manual remediation step and lets the engine check recovery, including re-running supporting tests after a minute. **What caused this issue?** saves your answer with the recorded incident when episode recording is enabled. Saved incident history, cause labels and the pseudonymised export are described in [docs/DIAGNOSE.md](docs/DIAGNOSE.md).
 
 **0 egress.** Learned destinations per process as a foldable tree with match type (SNI, IP, ASN, ECH), bytes, first and last seen, activity and policy verdict. The inspector shows what was seen and which rule line would admit it. `a` reviews allowing one destination, `d` keeps warning for the re-warn interval, `↵` on a destination opens packets, and `↵` on a process or `w` reviews its promotion. `P` reviews all observed processes together; `x` reviews removing the selected process rule. Every policy change shows the complete file diff before `y` or **Write policy** confirms it; `esc` cancels. Allowing an unruled process explains how many other observed destinations will become drift. A destination on the policy's block list, global `[block]` or `[process.<name>.block]`, reads `blocked` in red, comes first in the status strip and the tab badge, and has no allow action, because a block entry wins over any allow line. Promotion leaves blocked destinations out of the rule, and its review names them. The navigator lists the global block list and the alert mode: blocked destinations only by default, every finding with `alert = "all"`. Demo mode disables policy writes. Invalid or group/world-writable policy files are refused; the backend also rejects a file changed since preview. Writes preserve existing permission bits, comments, unrestricted ports, the global block list and the alert mode. Allowing and promoting also keep a rule's own block list. Removing a rule removes its block list with it, and the review names the entries that go.
 
@@ -222,9 +301,9 @@ Sheets open over the current screen, which keeps updating underneath. `esc` clos
 ![The command palette, searching for text size](docs/screenshots/palette.png)
 
 - **Command palette** (`:`). Fuzzy search over commands, tab jumps, packet display filters and entities (hosts and processes). Every row shows the key that does the same thing. `/` narrows to filters, `>` to jumps, `@` to hosts and processes. `tab` completes, `↵` runs. Recent commands come first.
-- **Settings** (`,`). The netwatch `config.toml` grouped as appearance, refresh and capture, GeoIP, alerts, AI insights and security. `←` `→` cycle values, `↵` edits text, `S` saves. Invalid values are marked on the row. Below the settings is the live capability report.
+- **Settings** (`,`). "this app" first (text size), then the netwatch `config.toml` grouped as appearance, refresh and capture, GeoIP, alerts, AI insights and security. `←` `→` cycle values, `↵` edits text, `S` saves. Invalid values are marked on the row. Below the settings is the live capability report.
 - **Flight recorder** (`E`). Armed, frozen and exported states with who froze it, packet density over the five-minute ring, the files that go into the bundle, and where they land. `R` arms, `F` freezes, `E` exports.
-- **First run.** What works now, what needs a grant, and the command for this platform.
+- **First run.** Text size, what works now, what needs a grant, and the command for this platform.
 - **Help** (`?`). Global keys and the current tab's keys.
 
 ## Themes and graphs
@@ -244,6 +323,22 @@ Two files:
 
 Exports go to `~/.cache/netwatch/exports/`, which only your user can open: the directory is 0700 and every export in it 0600, since they hold addresses, hostnames, process names and packet bytes. With no home directory there is nowhere to export, and exports say so rather than write to `/tmp`. The egress policy lives at `~/.config/netwatch/egress-policy.toml`.
 
+## Known limitations
+
+- Screen readers can read the navigator's tab list and little else. Most of the window is drawn text without accessibility labels.
+- In `dark` and `paper`, text and muted text pass 4.5:1 contrast, but the selected row's background is faint and a few status colours fall just short. The six terminal themes have lower contrast, and there is no high-contrast theme yet. Some status marks, such as the navigator's health dots and lite's rows, use colour alone.
+- A capture grant takes effect on the next start, and the app doesn't say so yet.
+- The app doesn't refuse or warn when it runs as root.
+- The [sandbox](#sandbox) covers netwatch's runtime and workers, not the window's thread or the incident history worker.
+- `--demo` adds a scenario on top of live data. Your machine's addresses, processes and PIDs stay on screen, so its screenshots aren't synthetic.
+- The traceroute to 1.1.1.1 at startup always runs.
+- macOS and Windows are experimental, with no binaries, and nobody has tried them by hand.
+- netwatch doesn't collect ASN per traceroute hop, interface driver, qdisc or offloads, per-interface gateway and DNS, TLS version per packet, or `tcp_info` pacing, delivered and lost. The screens show `–` for these and say so.
+- Traceroute runs one target at a time and keeps no history. A changed hop only shows after a retrace in the same session.
+- Timeline retransmission and recorder history start when the app starts.
+- Table columns can't be reordered or resized.
+- App-drawn window chrome is opt-in until edge resizing is checked on more compositors.
+
 ## How it is built
 
 The app uses egui and eframe for the UI. It depends on netwatch as a library.
@@ -256,6 +351,7 @@ netwatch-desktop
 ├── ui_kit.rs       panels, control strips, tables, pills, key hints, meters, bars
 ├── theme.rs        runtime palettes, graph look, fonts
 ├── graphs.rs       cached-texture throughput and latency graphs
+├── zoom.rs         text size presets, steps and limits
 ├── screens/        one module per tab
 ├── sheets/         settings, first run, recorder, palette, help
 ├── dense.rs        dense view
@@ -273,10 +369,12 @@ Where netwatch doesn't collect something a design calls for, the slot stays and 
 ## Development
 
 ```sh
+cargo fmt --all
+cargo clippy --all-targets -- -D warnings
 cargo test
-cargo clippy --all-targets
-cargo fmt
 ```
+
+`cargo test` includes the render matrix, which draws every tab, sheet and view at every text size on several screen sizes, headless, and fails on a panic or on content that leaves the window. [CONTRIBUTING.md](CONTRIBUTING.md) has the rest.
 
 The screenshots in `docs/screenshots/` are drawn headless by the test suite from a synthetic snapshot (`src/app/screenshots/fixture.rs`): documentation addresses, made-up processes and PIDs, and netwatch's demo incident. After a visible change, redraw them:
 
@@ -302,18 +400,12 @@ cargo test cached_graph_frame_cost -- --ignored --nocapture
 
 Design decisions and the reasoning behind them are in [docs/DESIGN-NOTES.md](docs/DESIGN-NOTES.md).
 
-## Known gaps
+## Security, contributing and changes
 
-- netwatch doesn't collect ASN per traceroute hop, interface driver, qdisc or offloads, per-interface gateway and DNS, TLS version per packet, or `tcp_info` pacing, delivered and lost. The screens show `–` for these and say so.
-- Traceroute runs one target at a time and keeps no history. A changed hop only shows after a retrace in the same session.
-- Timeline retransmission and recorder history start when the app starts.
-- Right-click selects but doesn't open an actions menu, and table columns can't be reordered or resized.
-- App-drawn window chrome is opt-in until edge resizing is checked on more compositors.
+- Found a security problem? Please don't open an issue; see [SECURITY.md](SECURITY.md).
+- [CONTRIBUTING.md](CONTRIBUTING.md) covers building, tests, screenshots and pull requests.
+- [CHANGELOG.md](CHANGELOG.md) lists what changed in each release.
 
 ## License
 
 MIT. IBM Plex and Adwaita Mono are under the SIL Open Font License; their licence files are in `assets/fonts/`.
-
-## Diagnose incidents
-
-Diagnose includes saved incident history, optional cause labels, export preview, test controls, manual-step verification and target-stage results. See [the Diagnose workflow guide](docs/DIAGNOSE.md) for configuration, privacy and validation details.
