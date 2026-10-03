@@ -158,6 +158,73 @@ fn layout_split_keeps_connections_and_health_readable() {
 }
 
 #[test]
+fn a_short_dashboard_scrolls_instead_of_squeezing_panels_to_headers() {
+    let s = fixture();
+    let (rows, listeners) = Dashboard::rows(&s);
+    // 1366×768 at 200% less the title bar, footer and rail; the dock hides.
+    let size = vec2(640.0, 300.0);
+    assert!(min_height(s.issues.len(), rows.len(), !listeners.is_empty(), false) > size.y);
+    let ctx = egui::Context::default();
+    crate::theme::install_fonts(&ctx);
+    crate::theme::apply(&ctx);
+    let mut d = Dashboard::default();
+    let mut shared = Shared::default();
+    let mut time = 0.0;
+    let mut frame = |events: Vec<egui::Event>| {
+        time += 1.0 / 60.0;
+        let out = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), size)),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    with_cx(&s, &mut shared, None, |cx| d.draw(ui, cx));
+                });
+            },
+        );
+        // Text that is on screen, not scrolled or clipped away.
+        let mut shown = Vec::new();
+        for clipped in &out.shapes {
+            if let egui::Shape::Text(t) = &clipped.shape {
+                let rect = t.galley.rect.translate(t.pos.to_vec2());
+                if clipped.clip_rect.contains_rect(rect) && rect.bottom() <= size.y {
+                    shown.push(t.galley.text().to_string());
+                }
+            }
+        }
+        shown
+    };
+    for _ in 0..3 {
+        frame(vec![]);
+    }
+    // Health keeps its three probes rather than shrinking to a header.
+    let shown = frame(vec![]);
+    for probe in ["gateway", "dns", "internet"] {
+        assert!(shown.iter().any(|t| t == probe), "{probe} in {shown:?}");
+    }
+    // Scrolled down, connections shows three rows, not one.
+    let middle = pos2(size.x / 2.0, size.y / 2.0);
+    frame(vec![egui::Event::PointerMoved(middle)]);
+    frame(vec![egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, -2000.0),
+        modifiers: Default::default(),
+    }]);
+    let mut shown = Vec::new();
+    for _ in 0..60 {
+        shown = frame(vec![]);
+    }
+    let remotes = shown
+        .iter()
+        .filter(|t| rows.iter().any(|r| r.conn.remote_addr == **t))
+        .count();
+    assert!(remotes >= 3, "{remotes} rows in {shown:?}");
+}
+
+#[test]
 fn rows_rank_by_concern_and_fold_listeners() {
     let s = fixture();
     let (rows, listeners) = Dashboard::rows(&s);

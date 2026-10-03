@@ -89,6 +89,10 @@ impl Default for Options {
 /// zoom of 1.15 that is about 1357 and 1150 window pixels.
 pub const RAIL_WIDTH: f32 = 1180.0;
 pub const COMPACT_WIDTH: f32 = 1000.0;
+/// Below this height between the title bar and the footer, in points, the
+/// timeline dock hides itself so the panels above keep their room. ☰ and
+/// the palette still show it.
+pub const DOCK_MIN_CENTRAL: f32 = 450.0;
 
 pub struct DesktopApp {
     backend: Arc<Backend>,
@@ -126,6 +130,10 @@ pub struct DesktopApp {
     armed_since: Option<Instant>,
     theme_applied: Option<&'static str>,
     full_window: Option<egui::Vec2>,
+    /// The window is too short for the dock (see [`DOCK_MIN_CENTRAL`]), and
+    /// whether it was asked for anyway this session.
+    dock_short: bool,
+    dock_forced: bool,
     /// Keys queued by footer/strip clicks, dispatched like keyboard input.
     clicked: Vec<Key>,
     quit: bool,
@@ -213,6 +221,8 @@ impl DesktopApp {
             armed_since: None,
             theme_applied: None,
             full_window: None,
+            dock_short: false,
+            dock_forced: false,
             clicked: Vec::new(),
             quit: false,
             deferred_sheet: None,
@@ -227,6 +237,11 @@ impl DesktopApp {
 
     pub fn tab(&self) -> Tab {
         self.stack.last().map(|l| l.tab).unwrap_or(Tab::Dashboard)
+    }
+    /// Whether the timeline dock shows: saved as shown, and the window
+    /// tall enough or the dock asked for anyway.
+    fn dock_visible(&self) -> bool {
+        self.prefs.show_dock && (!self.dock_short || self.dock_forced)
     }
     fn filter(&self) -> Option<Filter> {
         self.stack.last().and_then(|l| l.filter.clone())
@@ -874,9 +889,23 @@ impl DesktopApp {
             Nav::SetView(name) => self.set_view(ctx, View::from_name(name)),
             Nav::Global(key) => self.global_key(ctx, key, s),
             Nav::CycleTheme => self.cycle_theme(),
+            // Always flips what is on screen. In a short window the saved
+            // choice stays: showing the dock there is for this session.
             Nav::ToggleDock => {
-                self.prefs.show_dock = !self.prefs.show_dock;
-                self.prefs_dirty = true;
+                if self.dock_visible() {
+                    if self.dock_short {
+                        self.dock_forced = false;
+                    } else {
+                        self.prefs.show_dock = false;
+                        self.prefs_dirty = true;
+                    }
+                } else {
+                    if !self.prefs.show_dock {
+                        self.prefs.show_dock = true;
+                        self.prefs_dirty = true;
+                    }
+                    self.dock_forced = self.dock_short;
+                }
             }
             Nav::ToggleNavigator => {
                 self.prefs.nav_collapsed = !self.prefs.nav_collapsed;
@@ -1008,12 +1037,16 @@ impl DesktopApp {
             Nav::ToggleFade,
         ));
         entries.push(command(
-            if self.prefs.show_dock {
+            if self.dock_visible() {
                 "hide timeline dock"
             } else {
                 "show timeline dock"
             },
-            "dashboard · connections · diagnose",
+            if self.prefs.show_dock && !self.dock_visible() {
+                "hidden: window too short"
+            } else {
+                "dashboard · connections · diagnose"
+            },
             "",
             Nav::ToggleDock,
         ));
@@ -1445,7 +1478,8 @@ impl DesktopApp {
                 });
         }
 
-        if tab.has_dock() && self.prefs.show_dock {
+        self.dock_short = ctx.available_rect().height() < DOCK_MIN_CENTRAL;
+        if tab.has_dock() && self.dock_visible() {
             // Short windows give the panels above priority: the dock takes at
             // most a fifth of the height (and its saved height is kept).
             let cap = (ctx.screen_rect().height() * 0.2).clamp(96.0, 330.0);
@@ -1761,7 +1795,7 @@ impl DesktopApp {
                     }
                 }
             });
-            let mut dock = self.prefs.show_dock;
+            let mut dock = self.dock_visible();
             if ui.checkbox(&mut dock, "timeline dock").changed() {
                 nav.push(Nav::ToggleDock);
             }
@@ -3276,6 +3310,63 @@ mod tests {
                 );
             }
         }
+    }
+    #[test]
+    fn the_dock_hides_itself_in_short_windows_and_still_toggles() {
+        let s = crate::backend::tests::snapshot();
+        let draw =
+            |app: &mut DesktopApp, ctx: &egui::Context| app.draw_full(ctx, Some(&s), Some(&s));
+        let dock =
+            |out: &egui::FullOutput| texts_at(out).iter().any(|(t, _)| t.ends_with("←→ scrub"));
+        let mut app = app_with(Prefs::default());
+        let mut w = Window::new(vec2(1440.0, 900.0));
+        w.frame(&mut app, |app, ctx| app.start(ctx));
+        assert!(dock(&w.frame(&mut app, draw)), "783 pt tall at 115%");
+        // 200%: 450 pt tall, 380 between title bar and footer.
+        w.frame(&mut app, |app, ctx| {
+            app.change_zoom(ctx, zoom::Change::To(2.0))
+        });
+        w.frame(&mut app, draw);
+        assert!(!dock(&w.frame(&mut app, draw)));
+        let entry = |app: &mut DesktopApp| {
+            app.palette_entries(&s)
+                .into_iter()
+                .find(|e| e.action == Nav::ToggleDock)
+                .map(|e| (e.label, e.detail))
+                .unwrap()
+        };
+        assert_eq!(
+            entry(&mut app),
+            (
+                "show timeline dock".into(),
+                "hidden: window too short".into()
+            )
+        );
+        // Asked for, it shows for this session; the saved choice is kept.
+        app.prefs_dirty = false;
+        w.frame(&mut app, |app, ctx| {
+            app.apply_nav(ctx, Nav::ToggleDock, Some(&s))
+        });
+        assert!(dock(&w.frame(&mut app, draw)));
+        assert!(app.prefs.show_dock && !app.prefs_dirty);
+        assert_eq!(entry(&mut app).0, "hide timeline dock");
+        w.frame(&mut app, |app, ctx| {
+            app.apply_nav(ctx, Nav::ToggleDock, Some(&s))
+        });
+        assert!(!dock(&w.frame(&mut app, draw)));
+        assert!(app.prefs.show_dock);
+        // Back at 115% it shows again by itself.
+        w.frame(&mut app, |app, ctx| {
+            app.change_zoom(ctx, zoom::Change::Reset)
+        });
+        w.frame(&mut app, draw);
+        assert!(dock(&w.frame(&mut app, draw)));
+        // Hidden by choice stays hidden in any window.
+        w.frame(&mut app, |app, ctx| {
+            app.apply_nav(ctx, Nav::ToggleDock, Some(&s))
+        });
+        assert!(!dock(&w.frame(&mut app, draw)));
+        assert!(!app.prefs.show_dock && app.prefs_dirty);
     }
     #[test]
     fn theme_cycles_through_every_palette_and_back() {
