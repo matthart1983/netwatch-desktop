@@ -2025,25 +2025,37 @@ impl DesktopApp {
             .show(ctx, |ui| {
                 theme::dense_style(ui);
                 ui.horizontal_centered(|ui| {
-                    ui.label(ui_kit::strong("◉ netwatch", size, theme::accent()));
-                    ui.label(ui_kit::mono("— dense", size, theme::text()));
-                    if let Some(s) = s {
-                        ui.label(ui_kit::mono(
-                            format!("· {}", s.interface),
+                    // Large text sizes in a small window: shorter buttons and
+                    // no Maximise (the window's own controls have it), so
+                    // every button stays on screen. The brand gives way.
+                    let narrow = ui.available_width() < 640.0;
+                    let brand = [
+                        ui_kit::strong("◉ netwatch", size, theme::accent()),
+                        ui_kit::mono("— dense", size, theme::text()),
+                        ui_kit::mono(
+                            s.map(|s| format!("· {}", s.interface)).unwrap_or_default(),
                             size,
                             theme::muted(),
-                        ));
-                    }
+                        ),
+                    ];
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                         let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
-                        if ui
-                            .small_button(if maximized { "Restore" } else { "Maximise" })
-                            .clicked()
+                        if !narrow
+                            && ui
+                                .small_button(if maximized { "Restore" } else { "Maximise" })
+                                .clicked()
                         {
                             ui.ctx()
                                 .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
                         }
-                        if ui.small_button("Full view · V").clicked() {
+                        if ui
+                            .small_button(if narrow {
+                                "Full · V"
+                            } else {
+                                "Full view · V"
+                            })
+                            .clicked()
+                        {
                             self.clicked.push(Key::Char('V'));
                         }
                         let mut dense_nav = Vec::new();
@@ -2061,7 +2073,10 @@ impl DesktopApp {
                         {
                             self.toggle_freeze = true;
                         }
-                        if ui.small_button(": Commands").clicked() {
+                        if ui
+                            .small_button(if narrow { ":" } else { ": Commands" })
+                            .clicked()
+                        {
                             self.clicked.push(Key::Char(':'));
                         }
                         if self.frozen.is_some() {
@@ -2076,19 +2091,39 @@ impl DesktopApp {
                                 theme::error(),
                             );
                         }
+                        // The brand keeps its room while it fits; a toast
+                        // shortens to the space between.
+                        let brand_w: f32 = brand
+                            .iter()
+                            .map(|t| {
+                                egui::WidgetText::from(t.clone())
+                                    .into_galley(
+                                        ui,
+                                        Some(egui::TextWrapMode::Extend),
+                                        f32::INFINITY,
+                                        egui::TextStyle::Body,
+                                    )
+                                    .size()
+                                    .x
+                                    + ui.spacing().item_spacing.x
+                            })
+                            .sum();
                         if let Some(toast) = self.toast.as_ref().filter(|t| t.fresh()) {
-                            ui.add(
-                                egui::Label::new(ui_kit::mono(
-                                    &toast.text,
-                                    size - 1.0,
-                                    if toast.ok {
-                                        theme::good()
-                                    } else {
-                                        theme::error()
-                                    },
-                                ))
-                                .truncate(),
-                            );
+                            let room = (ui.available_width() - brand_w).max(0.0);
+                            ui.allocate_ui(vec2(room, ui.available_height()), |ui| {
+                                ui.add(
+                                    egui::Label::new(ui_kit::mono(
+                                        &toast.text,
+                                        size - 1.0,
+                                        if toast.ok {
+                                            theme::good()
+                                        } else {
+                                            theme::error()
+                                        },
+                                    ))
+                                    .truncate(),
+                                );
+                            });
                         }
                         if let Some(s) = s {
                             ui.label(ui_kit::mono(
@@ -2104,6 +2139,11 @@ impl DesktopApp {
                             ))
                             .on_hover_text(&s.capture);
                         }
+                        ui.with_layout(egui::Layout::left_to_right(Align::Center), |ui| {
+                            for text in brand {
+                                ui.add(egui::Label::new(text).truncate());
+                            }
+                        });
                     });
                 });
             });
@@ -3124,6 +3164,118 @@ mod tests {
         );
         let toast = app.toast.unwrap();
         assert!(!toast.ok && toast.text.contains("not valid TOML"));
+    }
+    /// A window as egui-winit drives it at native scale 1: its size and
+    /// minimum in pixels, and the monitor's. Viewport commands resize it
+    /// the way egui-winit does, times the zoom in force for the frame.
+    struct Window {
+        ctx: egui::Context,
+        px: egui::Vec2,
+        min: Option<egui::Vec2>,
+        monitor: Option<egui::Vec2>,
+        time: f64,
+        /// Input for the next frame.
+        events: Vec<egui::Event>,
+    }
+    impl Window {
+        fn new(px: egui::Vec2) -> Self {
+            let ctx = egui::Context::default();
+            theme::install_fonts(&ctx);
+            theme::apply(&ctx);
+            Self {
+                ctx,
+                px,
+                min: None,
+                monitor: None,
+                time: 0.0,
+                events: Vec::new(),
+            }
+        }
+        fn frame(
+            &mut self,
+            app: &mut DesktopApp,
+            draw: impl FnOnce(&mut DesktopApp, &egui::Context),
+        ) -> egui::FullOutput {
+            self.time += 1.0 / 60.0;
+            let zoom = self.ctx.zoom_factor();
+            let mut input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), self.px / zoom)),
+                time: Some(self.time),
+                events: std::mem::take(&mut self.events),
+                max_texture_side: Some(8192),
+                ..Default::default()
+            };
+            let viewport = input.viewports.entry(egui::ViewportId::ROOT).or_default();
+            viewport.native_pixels_per_point = Some(1.0);
+            viewport.monitor_size = self.monitor.map(|m| m / zoom);
+            let out = self.ctx.run(input, |ctx| draw(app, ctx));
+            // A zoom set this frame starts next frame, so this is the one
+            // egui-winit applies the commands with.
+            let zoom = self.ctx.zoom_factor();
+            for command in &out.viewport_output[&egui::ViewportId::ROOT].commands {
+                match command {
+                    egui::ViewportCommand::InnerSize(size) => self.px = *size * zoom,
+                    egui::ViewportCommand::MinInnerSize(size) => self.min = Some(*size * zoom),
+                    _ => {}
+                }
+            }
+            if let Some(min) = self.min {
+                self.px = self.px.max(min);
+            }
+            out
+        }
+    }
+    /// Whether `text` is drawn whole inside `screen`, not clipped away.
+    fn on_screen(out: &egui::FullOutput, screen: Rect, text: &str) -> bool {
+        out.shapes.iter().any(|c| match &c.shape {
+            egui::Shape::Text(t) => {
+                let rect = t.galley.rect.translate(t.pos.to_vec2());
+                t.galley.text() == text
+                    && c.clip_rect.contains_rect(rect)
+                    && screen.contains_rect(rect)
+            }
+            _ => false,
+        })
+    }
+    #[test]
+    fn dense_title_buttons_stay_on_screen_at_large_text_sizes() {
+        let s = crate::backend::tests::snapshot();
+        let draw =
+            |app: &mut DesktopApp, ctx: &egui::Context| app.draw_dense(ctx, Some(&s), Some(&s));
+        // Dense's smallest window, 1100×680 px.
+        for (zoom, buttons) in [
+            (
+                1.15,
+                [
+                    ": Commands",
+                    "Pause · p",
+                    "☰ menu",
+                    "Full view · V",
+                    "Maximise",
+                ]
+                .as_slice(),
+            ),
+            (2.0, [":", "Pause · p", "☰ menu", "Full · V"].as_slice()),
+            (3.0, [":", "Pause · p", "☰ menu", "Full · V"].as_slice()),
+        ] {
+            let mut app = app_with(Prefs::default());
+            app.view = View::Dense;
+            let mut w = Window::new(vec2(1100.0, 680.0));
+            w.frame(&mut app, |app, ctx| app.start(ctx));
+            w.frame(&mut app, |app, ctx| {
+                app.change_zoom(ctx, zoom::Change::To(zoom))
+            });
+            w.frame(&mut app, draw);
+            let out = w.frame(&mut app, draw);
+            let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(1100.0, 680.0) / zoom);
+            for button in buttons {
+                assert!(
+                    on_screen(&out, screen, button),
+                    "{zoom}: {button} in {:?}",
+                    texts_at(&out)
+                );
+            }
+        }
     }
     #[test]
     fn theme_cycles_through_every_palette_and_back() {
