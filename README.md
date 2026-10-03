@@ -128,8 +128,8 @@ Active health checks send DNS, reachability and STUN probes. Collection and anal
 
 Every tab shares one frame:
 
-- The title bar has the breadcrumb (for example `connections › claude:443`), a command field that opens the palette, chips for recorder state, pause, open issues and egress drift, the capture interface, and the menu.
-- The navigator on the left lists the ten tabs with live badges (socket count, packet rate, open issue count, drift). Under it is a network tree (this machine, gateway, dns, internet, interfaces) and the top processes. Clicking a node filters the current tab and adds it to the breadcrumb. `esc` removes it.
+- The title bar has the breadcrumb (for example `connections › claude:443`), a command field that opens the palette, chips for recorder state, pause, open issues, blocked egress destinations and egress drift, the capture interface, and the menu.
+- The navigator on the left lists the ten tabs with live badges (socket count, packet rate, open issue count, blocked or drifting destinations). Under it is a network tree (this machine, gateway, dns, internet, interfaces) and the top processes. Clicking a node filters the current tab and adds it to the breadcrumb. `esc` removes it.
 - A status strip appears when an issue is open. It reads from the same issue list as the diagnose tab and disappears when things are healthy.
 - The inspector on the right follows the selection on tabs that have one (dashboard, connections, packets, processes, egress).
 - The timeline dock sits under the dashboard, connections and diagnose.

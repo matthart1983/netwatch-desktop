@@ -324,6 +324,23 @@ fn promotion_names_the_blocked_destinations_it_leaves_out() {
 }
 
 #[test]
+fn strip_offers_no_allow_when_every_finding_is_blocked() {
+    let s = Snapshot::empty();
+    let mut screen = with_block();
+    let mut h = Harness::new();
+    // Quiet node's drift, leaving only curl's blocked destination.
+    screen.selected = Some(Sel::Dest("node".into(), "203.0.113.9".into(), 443));
+    assert!(screen.key(Key::Char('d'), &mut h.cx(&s, None)));
+    screen.selected = None;
+    let strip = screen.status(&h.cx(&s, None)).unwrap();
+    assert_eq!(strip.word, "1 blocked");
+    let keys: Vec<&str> = strip.keys.iter().map(|k| k.label.as_str()).collect();
+    assert_eq!(keys, ["keep warning"]);
+    assert!(!screen.key(Key::Char('a'), &mut h.cx(&s, None)));
+    assert!(screen.pending.is_none());
+}
+
+#[test]
 fn tab_badge_and_navigator_show_the_block_list_state() {
     let mut s = Snapshot::empty();
     let mut blocked = with_block();
