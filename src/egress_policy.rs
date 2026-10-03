@@ -120,12 +120,26 @@ impl PolicyFile {
             return Err(format!("no policy rule for {name}"));
         }
         let strict = self.policy.strict;
+        // `[process.<name>.block]` lives inside the rule's table, so it goes
+        // with it. Name what stops being flagged rather than drop it quietly.
+        let blocks = self
+            .policy
+            .process
+            .get(name)
+            .map(|r| crate::screens::egress::model::block_entries(&r.block))
+            .unwrap_or_default();
         let mut edit = self.finish(doc, format!("Remove rule for {name}"))?;
         edit.warnings.push(if strict {
             "This process will be reported as undeclared because strict mode is enabled.".into()
         } else {
             "This process will no longer be checked against its destination rule.".into()
         });
+        if !blocks.is_empty() {
+            edit.warnings.push(format!(
+                "Its block list goes too ({}): those destinations will no longer be reported as blocked for {name}.",
+                blocks.join(" · ")
+            ));
+        }
         Ok(edit)
     }
 

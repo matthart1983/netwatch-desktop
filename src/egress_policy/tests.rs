@@ -201,4 +201,25 @@ fn edits_keep_the_block_lists_and_alert_mode() {
         promote.policy().process["curl"].allow_ip,
         ["10.0.0.1", "10.0.0.2"]
     );
+    // A rule with no block table goes with no block warning.
+    assert_eq!(removal.warnings.len(), 1, "{:?}", removal.warnings);
+}
+
+#[test]
+fn removing_a_rule_names_the_block_list_that_goes_with_it() {
+    use netwatch::collectors::egress::AlertMode;
+    let original = "alert = \"all\"\n\n[block]\nports = [25]\n\n[process.curl]\nallow_ip = [\"10.0.0.1\"]\n\n[process.curl.block]\nip = [\"198.51.100.0/24\"]\nsni = [\"*.evil.example\"]\n";
+    let (_dir, path) = source(original);
+    let edit = PolicyFile::read(&path).unwrap().remove("curl").unwrap();
+    let policy = edit.policy();
+    assert!(!policy.process.contains_key("curl"));
+    // The global block list and alert mode are not the rule's to take.
+    assert_eq!(policy.block.ports, [25]);
+    assert_eq!(policy.alert, AlertMode::All);
+    assert!(edit.diff().contains("-ip = [\"198.51.100.0/24\"]"));
+    assert_eq!(edit.warnings.len(), 2, "{:?}", edit.warnings);
+    assert_eq!(
+        edit.warnings[1],
+        "Its block list goes too (sni *.evil.example · ip 198.51.100.0/24): those destinations will no longer be reported as blocked for curl."
+    );
 }
