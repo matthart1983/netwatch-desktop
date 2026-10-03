@@ -94,6 +94,15 @@ pub const COMPACT_WIDTH: f32 = 1000.0;
 /// the palette still show it.
 pub const DOCK_MIN_CENTRAL: f32 = 450.0;
 
+/// Each view's smallest window, in window points before text size.
+pub fn minimum_window(view: View) -> egui::Vec2 {
+    match view {
+        View::Full => vec2(900.0, 600.0),
+        View::Dense => vec2(1100.0, 680.0),
+        View::Lite => vec2(720.0, 420.0),
+    }
+}
+
 pub struct DesktopApp {
     backend: Arc<Backend>,
     demo: bool,
@@ -271,16 +280,12 @@ impl DesktopApp {
         self.view = view;
         self.prefs.view = view.name().into();
         self.prefs_dirty = true;
-        let minimum = match view {
-            View::Full => vec2(900.0, 600.0),
-            View::Dense => vec2(1100.0, 680.0),
-            View::Lite => vec2(720.0, 420.0),
-        };
-        ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(minimum));
+        self.send_minimum(ctx);
+        let minimum = minimum_window(view);
         match view {
             View::Lite => {
                 let [w, h] = self.prefs.lite_window.unwrap_or([720.0, 420.0]);
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(vec2(w, h)));
+                send_inner_size(ctx, vec2(w, h));
                 if self.prefs.lite_on_top {
                     ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
                         egui::WindowLevel::AlwaysOnTop,
@@ -289,15 +294,22 @@ impl DesktopApp {
             }
             View::Full => {
                 if let Some(size) = self.full_window.filter(|s| s.x >= 900.0) {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size.max(minimum)));
+                    send_inner_size(ctx, size.max(minimum));
                 }
             }
             View::Dense => {
                 if size.x < minimum.x || size.y < minimum.y {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size.max(minimum)));
+                    send_inner_size(ctx, size.max(minimum));
                 }
             }
         }
+    }
+
+    /// Sends this view's minimum window. The text size doesn't change it:
+    /// small windows at large text sizes scroll instead.
+    fn send_minimum(&self, ctx: &egui::Context) {
+        let minimum = viewport_size(ctx, minimum_window(self.view));
+        ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(minimum));
     }
 
     pub fn zoom_dense(&mut self, panel: crate::dense::Panel) {
@@ -714,6 +726,9 @@ impl DesktopApp {
     /// zoom keys in place of egui's, and lite's on-top level.
     fn start(&mut self, ctx: &egui::Context) {
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
+        // The window was made before the monitor was known: keep its
+        // minimum on it.
+        self.send_minimum(ctx);
         ctx.set_zoom_factor(self.zoom);
         if self.view == View::Lite && self.prefs.lite_on_top {
             ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
@@ -728,6 +743,7 @@ impl DesktopApp {
     fn change_zoom(&mut self, ctx: &egui::Context, change: zoom::Change) {
         self.zoom = change.apply(self.zoom);
         ctx.set_zoom_factor(self.zoom);
+        self.send_minimum(ctx);
         if self.prefs.zoom != self.zoom {
             self.prefs.zoom = self.zoom;
             self.prefs_dirty = true;
@@ -2335,10 +2351,31 @@ fn middle_ellipsis(ui: &Ui, text: &str, font: FontId, width: f32) -> String {
     "…".into()
 }
 
-/// The window's inner size in points before UI zoom: what
-/// `ViewportCommand::InnerSize` and the saved layout use.
+/// The window's inner size in points before UI zoom: what the saved
+/// layout, the minimums and `--window-size` use.
 fn window_size(ctx: &egui::Context) -> egui::Vec2 {
     ctx.screen_rect().size() * ctx.zoom_factor()
+}
+
+/// `size`, in window points before UI zoom, as `InnerSize` and
+/// `MinInnerSize` take it. egui-winit multiplies those by the zoom in force
+/// when it applies them (this frame's: a new zoom starts next frame), so
+/// divide by it; and keep it on the monitor (`monitor` is in UI points).
+fn to_viewport(size: egui::Vec2, zoom: f32, monitor: Option<egui::Vec2>) -> egui::Vec2 {
+    let points = size / zoom;
+    match monitor.filter(|m| m.x > 0.0 && m.y > 0.0) {
+        Some(monitor) => points.min(monitor),
+        None => points,
+    }
+}
+
+fn viewport_size(ctx: &egui::Context, size: egui::Vec2) -> egui::Vec2 {
+    let monitor = ctx.input(|i| i.viewport().monitor_size);
+    to_viewport(size, ctx.zoom_factor(), monitor)
+}
+
+fn send_inner_size(ctx: &egui::Context, size: egui::Vec2) {
+    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(viewport_size(ctx, size)));
 }
 
 /// Breadcrumb parts that fit `budget` points: middle levels become one
@@ -3319,6 +3356,88 @@ mod tests {
                 );
             }
         }
+    }
+    fn inner_sizes(out: &egui::FullOutput) -> Vec<egui::Vec2> {
+        out.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                egui::ViewportCommand::InnerSize(size) => Some(*size),
+                _ => None,
+            })
+            .collect()
+    }
+    fn near(a: egui::Vec2, b: egui::Vec2) -> bool {
+        (a - b).length() < 0.01
+    }
+    #[test]
+    fn a_full_lite_round_trip_at_150_percent_keeps_both_window_sizes() {
+        let mut app = app_with(Prefs {
+            lite_window: Some([800.0, 480.0]),
+            ..Default::default()
+        });
+        let mut w = Window::new(vec2(1440.0, 900.0));
+        w.frame(&mut app, |app, ctx| app.start(ctx));
+        w.frame(&mut app, |app, ctx| {
+            app.change_zoom(ctx, zoom::Change::To(1.5))
+        });
+        w.frame(&mut app, |_, _| {});
+        assert_eq!(w.ctx.zoom_factor(), 1.5);
+        for trip in 0..3 {
+            let out = w.frame(&mut app, |app, ctx| app.set_view(ctx, View::Lite));
+            // The saved size, divided by the text size egui-winit multiplies by.
+            let sent = inner_sizes(&out);
+            assert!(near(sent[0], vec2(800.0, 480.0) / 1.5), "{sent:?}");
+            assert!(
+                near(w.px, vec2(800.0, 480.0)),
+                "trip {trip}: lite {:?}",
+                w.px
+            );
+            w.frame(&mut app, |_, _| {});
+            w.frame(&mut app, |app, ctx| app.set_view(ctx, View::Full));
+            assert!(
+                near(w.px, vec2(1440.0, 900.0)),
+                "trip {trip}: full {:?}",
+                w.px
+            );
+            let [lw, lh] = app.prefs.lite_window.unwrap();
+            assert!(near(vec2(lw, lh), vec2(800.0, 480.0)), "saved {lw}×{lh}");
+            w.frame(&mut app, |_, _| {});
+        }
+    }
+    #[test]
+    fn minimums_stay_in_window_points_at_every_text_size_and_fit_the_monitor() {
+        assert_eq!(
+            to_viewport(vec2(1100.0, 680.0), 2.0, None),
+            vec2(550.0, 340.0)
+        );
+        assert_eq!(
+            to_viewport(vec2(1100.0, 680.0), 1.0, Some(vec2(1024.0, 600.0))),
+            vec2(1024.0, 600.0)
+        );
+        let mut app = app_with(Prefs::default());
+        app.view = View::Lite;
+        let mut w = Window::new(vec2(720.0, 420.0));
+        w.monitor = Some(vec2(1366.0, 768.0));
+        w.frame(&mut app, |app, ctx| app.start(ctx));
+        assert!(near(w.min.unwrap(), vec2(720.0, 420.0)));
+        // Each text size resends it, and it stays 720×420 pixels: lite's
+        // minimum at 300% used to be 2160×1260, past a 1366×768 screen.
+        for _ in 0..zoom::PRESETS.len() {
+            w.frame(&mut app, |app, ctx| {
+                app.change_zoom(ctx, zoom::Change::Larger)
+            });
+            assert!(near(w.min.unwrap(), vec2(720.0, 420.0)), "{:?}", w.min);
+        }
+        w.frame(&mut app, |_, _| {});
+        assert_eq!(w.ctx.zoom_factor(), 3.0);
+        assert!(near(w.px, vec2(720.0, 420.0)), "{:?}", w.px);
+        // Dense's 1100×680 doesn't fit a 1024×600 monitor: the monitor wins.
+        w.monitor = Some(vec2(1024.0, 600.0));
+        w.frame(&mut app, |_, _| {});
+        w.frame(&mut app, |app, ctx| app.set_view(ctx, View::Dense));
+        assert!(near(w.min.unwrap(), vec2(1024.0, 600.0)), "{:?}", w.min);
+        assert!(near(w.px, vec2(1024.0, 600.0)), "{:?}", w.px);
     }
     #[test]
     fn the_dock_hides_itself_in_short_windows_and_still_toggles() {
