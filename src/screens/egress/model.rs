@@ -50,23 +50,32 @@ impl MatchKind {
 /// `show` group of the control strip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Show {
-    Drift,
+    /// Blocked destinations and drift.
+    Findings,
     NoRule,
     All,
 }
 
 impl Show {
-    pub const ALL: [Show; 3] = [Show::Drift, Show::NoRule, Show::All];
+    pub const ALL: [Show; 3] = [Show::Findings, Show::NoRule, Show::All];
     pub fn label(self) -> &'static str {
         match self {
-            Show::Drift => "drift",
+            Show::Findings => "findings",
             Show::NoRule => "no rule",
             Show::All => "all",
         }
     }
+    /// The saved setting. Findings saves as `drift`, its name before blocked
+    /// destinations joined it, so a saved filter still restores.
+    pub fn key(self) -> &'static str {
+        match self {
+            Show::Findings => "drift",
+            other => other.label(),
+        }
+    }
     pub fn admits(self, v: &Verdict) -> bool {
         match self {
-            Show::Drift => is_finding(v),
+            Show::Findings => is_finding(v),
             Show::NoRule => matches!(v, Verdict::NoRule | Verdict::NoPolicy),
             Show::All => true,
         }
@@ -846,7 +855,7 @@ mod tests {
         let blocked = Verdict::Blocked("evil.example is blocked (*.evil.example)".into());
         assert_eq!(verdict_pill(&blocked), ("blocked", Some(theme::error())));
         assert!(is_blocked(&blocked) && is_finding(&blocked) && !is_drift(&blocked));
-        assert!(Show::Drift.admits(&blocked));
+        assert!(Show::Findings.admits(&blocked));
         assert!(is_finding(&Verdict::Drift) && !is_finding(&Verdict::NoRule));
         let mut e = EgressSnapshot::default();
         let mut profile = netwatch::collectors::egress::EgressProfile {
@@ -881,7 +890,7 @@ mod tests {
         e.policy.as_mut().unwrap().process.clear();
         let rows = build(&e, &Scope::default());
         assert_eq!(rows[0].summary.0, "no rule · 2 · 1 blocked");
-        let lines = lines(&rows, Show::Drift, &HashSet::new());
+        let lines = lines(&rows, Show::Findings, &HashSet::new());
         let [Line::Process(0), Line::Dest(0, d)] = lines[..] else {
             panic!("{lines:?}");
         };
@@ -940,7 +949,7 @@ mod tests {
         assert_eq!(rows[0].summary.0, "ruled · 1 · 1 drift");
         let all = lines(&rows, Show::All, &HashSet::new());
         assert_eq!(all.len(), 3);
-        let drift = lines(&rows, Show::Drift, &HashSet::new());
+        let drift = lines(&rows, Show::Findings, &HashSet::new());
         assert_eq!(drift, vec![Line::Process(0), Line::Dest(0, 0)]);
         let folded: HashSet<String> = ["node".to_string()].into();
         assert_eq!(lines(&rows, Show::All, &folded), vec![Line::Process(0)]);

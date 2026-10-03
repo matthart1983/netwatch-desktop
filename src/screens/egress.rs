@@ -148,14 +148,14 @@ impl Egress {
     }
 
     /// Rows under the tab filter, match and query; visible lines under show
-    /// and folding; and the (drift, no rule, all) destination counts.
+    /// and folding; and the (findings, no rule, all) destination counts.
     pub fn tree(&self, cx: &Cx) -> (Vec<ProcRow>, Vec<Line>, [usize; 3]) {
         let rows = model::build(self.egress(cx.s), &self.scope(cx));
         let dests = rows.iter().flat_map(|r| &r.dests);
         let counts = [
             dests
                 .clone()
-                .filter(|d| Show::Drift.admits(&d.verdict))
+                .filter(|d| Show::Findings.admits(&d.verdict))
                 .count(),
             dests
                 .clone()
@@ -1371,7 +1371,7 @@ impl Screen for Egress {
             "match".into(),
             self.kind.map_or("any", MatchKind::label).into(),
         );
-        t.insert("show".into(), self.show.label().into());
+        t.insert("show".into(), self.show.key().into());
         let mut folded: Vec<&String> = self.folded.iter().collect();
         folded.sort();
         t.insert(
@@ -1388,7 +1388,7 @@ impl Screen for Egress {
         if let Some(show) = state
             .get("show")
             .and_then(|v| v.as_str())
-            .and_then(|l| Show::ALL.into_iter().find(|s| s.label() == l))
+            .and_then(|k| Show::ALL.into_iter().find(|s| s.key() == k))
         {
             self.show = show;
         }

@@ -217,6 +217,9 @@ fn blocked_destination_leads_the_strip_and_cannot_be_allowed() {
         "evil.example is blocked (*.evil.example)",
         "alerts for blocked, drift and undeclared",
         "blocks sni *.evil.example · port 25",
+        // The filter counts blocked and drift together, so it isn't
+        // labelled drift.
+        "findings 2",
     ] {
         assert!(texts.iter().any(|t| t == want), "{want} in {texts:?}");
     }
@@ -405,7 +408,7 @@ fn keys_move_fold_filter_and_promote() {
     assert!(screen.key(Key::Char('z'), &mut h.cx(&s, None)));
     assert_eq!(screen.tree(&h.cx(&s, None)).1.len(), 12);
     assert!(screen.key(Key::Char('v'), &mut h.cx(&s, None)));
-    assert_eq!(screen.show, Show::Drift);
+    assert_eq!(screen.show, Show::Findings);
     assert_eq!(screen.tree(&h.cx(&s, None)).1.len(), 2);
     assert!(screen.key(Key::Enter, &mut h.cx(&s, None)));
     assert!(h.commands.is_empty());
@@ -603,4 +606,10 @@ fn state_persists() {
     assert_eq!(restored.kind, Some(MatchKind::Sni));
     assert_eq!(restored.show, Show::NoRule);
     assert!(restored.folded.contains("firefox"));
+    // Findings keeps the key it was saved under as drift.
+    screen.show = Show::Findings;
+    let saved = screen.save().unwrap();
+    assert_eq!(saved["show"].as_str(), Some("drift"));
+    restored.restore(&saved);
+    assert_eq!(restored.show, Show::Findings);
 }
