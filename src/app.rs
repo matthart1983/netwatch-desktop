@@ -1408,6 +1408,12 @@ impl DesktopApp {
         let filter = self.filter();
         let mut commands = Vec::new();
         let mut nav = Vec::new();
+        // The inspector sheet stands in for the column in compact windows.
+        // Once the column fits again (a wider window, a smaller text size)
+        // the column takes over: both at once is one id on two layers.
+        if !compact && matches!(self.sheet, Some(ActiveSheet::Inspector)) {
+            self.sheet = None;
+        }
 
         egui::TopBottomPanel::top("title_bar")
             .exact_height(theme::TITLE_HEIGHT)
@@ -3543,6 +3549,44 @@ mod tests {
         }
         let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 200.0));
         assert!(on_screen(&out, screen, "help  ?"), "{:?}", texts_at(&out));
+    }
+    #[test]
+    fn the_inspector_sheet_closes_when_its_column_fits_again() {
+        let s = crate::backend::tests::snapshot();
+        let draw = |app: &mut DesktopApp, ctx: &egui::Context| {
+            app.draw_full(ctx, Some(&s), Some(&s));
+            app.draw_sheet(ctx, Some(&s));
+        };
+        let open = |w: &mut Window, app: &mut DesktopApp| {
+            w.frame(app, |app, ctx| app.change_zoom(ctx, zoom::Change::To(1.5)));
+            w.frame(app, draw);
+            w.frame(app, |app, ctx| {
+                app.global_key(ctx, Key::Char('I'), Some(&s))
+            });
+            assert!(matches!(app.sheet, Some(ActiveSheet::Inspector)));
+            w.frame(app, draw);
+        };
+        // 1440×900 at 150% is 960 pt wide, so I opens the sheet. Ctrl − to
+        // 125% makes it 1152 pt: the column is back, and drawing both was a
+        // debug panic (one id on two layers).
+        let mut app = app_with(Prefs::default());
+        app.stack.last_mut().unwrap().tab = Tab::Connections;
+        let mut w = Window::new(vec2(1440.0, 900.0));
+        w.frame(&mut app, |app, ctx| app.start(ctx));
+        open(&mut w, &mut app);
+        w.frame(&mut app, |app, ctx| {
+            app.change_zoom(ctx, zoom::Change::Smaller)
+        });
+        w.frame(&mut app, draw);
+        w.frame(&mut app, draw);
+        assert_eq!(w.ctx.zoom_factor(), 1.25);
+        assert!(app.sheet.is_none());
+        // Widening the window past 1000 pt does the same.
+        open(&mut w, &mut app);
+        w.px = vec2(1600.0, 900.0);
+        w.frame(&mut app, draw);
+        w.frame(&mut app, draw);
+        assert!(app.sheet.is_none());
     }
     #[test]
     fn theme_cycles_through_every_palette_and_back() {

@@ -2,8 +2,9 @@
 //! preset, on three common screens and on each view's minimum window,
 //! rendered headless (no GPU, so it runs in CI). Nothing may panic,
 //! egui's debug assertions included; every sheet stays inside the window;
-//! the first-run "continue" button is on screen; dense box 4 shows at
-//! least three socket rows.
+//! the first-run "continue" button is on screen; the inspector sheet opens
+//! where its column doesn't fit; dense box 4 shows at least three socket
+//! rows.
 use super::*;
 use egui::{Event, PointerButton, Vec2};
 
@@ -23,12 +24,15 @@ enum Case {
     Lite,
     /// The ☰ menu, opened, over the full or lite view.
     Menu(View),
+    /// `I` pressed on a tab with an inspector: a sheet in compact windows,
+    /// nothing where the column fits.
+    Inspector(Tab),
 }
 
 impl Case {
     fn view(self) -> View {
         match self {
-            Case::Tab(_) => View::Full,
+            Case::Tab(_) | Case::Inspector(_) => View::Full,
             Case::Sheet(_, view) | Case::Menu(view) => view,
             Case::Dense => View::Dense,
             Case::Lite => View::Lite,
@@ -85,7 +89,7 @@ fn snapshot() -> Snapshot {
 
 fn render(case: Case, window: Vec2, zoom: f32, s: &Snapshot) -> Rendered {
     let tab = match case {
-        Case::Tab(tab) => tab,
+        Case::Tab(tab) | Case::Inspector(tab) => tab,
         _ => Tab::Dashboard,
     };
     let mut app = DesktopApp::new(Backend::preview(), tab);
@@ -131,6 +135,12 @@ fn render(case: Case, window: Vec2, zoom: f32, s: &Snapshot) -> Rendered {
             out = frame(&mut app, vec![]);
         }
     }
+    if let Case::Inspector(_) = case {
+        app.global_key(&ctx, Key::Char('I'), Some(s));
+        for _ in 0..4 {
+            out = frame(&mut app, vec![]);
+        }
+    }
     if let Case::Menu(_) = case {
         let at = texts(&out)
             .into_iter()
@@ -171,6 +181,22 @@ fn check(case: Case, r: &Rendered) -> Vec<String> {
             Some(rect) if r.screen.expand(0.5).contains_rect(rect) => {}
             Some(rect) => failed.push(format!("the sheet at {rect:?} leaves the window")),
             None => failed.push("the sheet is not shown".into()),
+        }
+    }
+    if let Case::Inspector(_) = case {
+        let rect = r.ctx.memory(|m| m.area_rect(egui::Id::new("inspector")));
+        match (
+            r.screen.width() < COMPACT_WIDTH,
+            r.app.sheet.is_some(),
+            rect,
+        ) {
+            (true, true, Some(rect)) if r.screen.expand(0.5).contains_rect(rect) => {}
+            (true, true, Some(rect)) => {
+                failed.push(format!("the inspector at {rect:?} leaves the window"))
+            }
+            (true, _, _) => failed.push("the inspector sheet is not shown".into()),
+            (false, true, _) => failed.push("the inspector sheet opened beside its column".into()),
+            (false, false, _) => {}
         }
     }
     if let Case::Sheet("firstrun", _) = case {
@@ -264,6 +290,11 @@ matrix! {
     lite: Case::Lite;
     menu: Case::Menu(View::Full);
     lite_menu: Case::Menu(View::Lite);
+    dashboard_inspector: Case::Inspector(Tab::Dashboard);
+    connections_inspector: Case::Inspector(Tab::Connections);
+    packets_inspector: Case::Inspector(Tab::Packets);
+    processes_inspector: Case::Inspector(Tab::Processes);
+    egress_inspector: Case::Inspector(Tab::Egress);
 }
 
 /// Stops compiling when a tab is added: give it a line in `matrix!`.
