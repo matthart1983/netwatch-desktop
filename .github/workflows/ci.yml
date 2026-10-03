@@ -20,7 +20,10 @@ env:
 
 jobs:
   # The job to require on master. ubuntu-22.04 rather than latest: its glibc
-  # 2.35 is the floor the Linux release binaries are meant to run on.
+  # 2.35 is the floor the Linux release binaries are meant to run on. GitHub
+  # has deprecated the image and removes it on 17 April 2027. Move this job
+  # and netwatch-main before the first brownout on 23 March 2027: a brownout
+  # fails this check, which blocks merges once it is required.
   linux:
     runs-on: ubuntu-22.04
     timeout-minutes: 40
