@@ -2285,6 +2285,36 @@ mod tests {
         assert!(!focused_after(true));
     }
     #[test]
+    fn lite_footer_pause_hint_pauses() {
+        let mut app = DesktopApp::new(Backend::preview(), Tab::Dashboard);
+        let ctx = egui::Context::default();
+        let s = crate::backend::tests::snapshot();
+        press(&mut app, &ctx, Key::Char('L'), &s);
+        assert_eq!(app.view(), View::Lite);
+        let pause = crate::lite::footer_hints()
+            .into_iter()
+            .find(|h| h.label == "pause")
+            .unwrap();
+        assert_eq!(pause.key, Key::Char('p'));
+        // The footer dispatches the hint's key, as a click on it does.
+        let a = Arc::new(crate::backend::tests::snapshot());
+        press(&mut app, &ctx, pause.key, &s);
+        assert!(Arc::ptr_eq(
+            &app.displayed_snapshot(Some(a.clone())).unwrap(),
+            &a
+        ));
+        let b = Arc::new(crate::backend::tests::snapshot());
+        assert!(Arc::ptr_eq(
+            &app.displayed_snapshot(Some(b.clone())).unwrap(),
+            &a
+        ));
+        press(&mut app, &ctx, pause.key, &s);
+        assert!(Arc::ptr_eq(
+            &app.displayed_snapshot(Some(b.clone())).unwrap(),
+            &b
+        ));
+    }
+    #[test]
     fn view_cycles_full_lite_dense_full() {
         let mut app = DesktopApp::new(Backend::preview(), Tab::Stats);
         let ctx = egui::Context::default();
