@@ -336,6 +336,7 @@ impl Help {
     pub fn full(tab: Tab, keys: Vec<Hint>) -> Self {
         let palette = format!(": {}", palette_chord());
         let copy = copy_chord();
+        let (zoom_keys, zoom_label) = crate::zoom::help_row();
         let mut global = pairs(&[
             ("1–9 0", "switch tabs, from anywhere"),
             (
@@ -354,7 +355,7 @@ impl Help {
                 "inspector, when the window is too narrow for its column",
             ),
             ("V L", "cycle view full → lite → dense · lite"),
-            ("ctrl + −", "UI zoom"),
+            (&zoom_keys, &zoom_label),
             (",", "settings"),
             ("?", "help"),
             ("q", "quit"),
@@ -373,6 +374,7 @@ impl Help {
 
     pub fn dense() -> Self {
         let palette = format!(": {}", palette_chord());
+        let (zoom_keys, zoom_label) = crate::zoom::help_row();
         Self {
             view: "dense view",
             global: pairs(&[
@@ -389,8 +391,8 @@ impl Help {
                 ("d", "diagnose"),
                 ("R F", "arm · freeze flight recorder"),
                 ("e E", "export report · incident bundle"),
-                ("ctrl + −", "UI zoom · shared with full and lite"),
                 ("V / L / esc", "full view · lite view · unzoom, then full"),
+                (&zoom_keys, &zoom_label),
                 (&palette, "command palette"),
                 (", ? q", "settings · help · quit"),
             ]),
@@ -401,6 +403,7 @@ impl Help {
 
     pub fn lite() -> Self {
         let palette = format!(": {}", palette_chord());
+        let (zoom_keys, zoom_label) = crate::zoom::help_row();
         Self {
             view: "lite view",
             global: pairs(&[
@@ -414,6 +417,7 @@ impl Help {
                 ("d", "diagnose"),
                 ("p", "pause / resume the display"),
                 ("L / V", "full view · dense view"),
+                (&zoom_keys, &zoom_label),
                 (&palette, "command palette"),
                 (", ? q", "settings · help · quit"),
             ]),
@@ -508,6 +512,27 @@ mod tests {
             detail: String::new(),
             key: String::new(),
             action: Nav::Back,
+        }
+    }
+    #[test]
+    fn help_names_the_text_size_keys_in_every_view() {
+        let (keys, label) = crate::zoom::help_row();
+        for help in [
+            Help::full(Tab::Dashboard, Vec::new()),
+            Help::dense(),
+            Help::lite(),
+        ] {
+            assert!(
+                help.global.iter().any(|(k, l)| *k == keys && *l == label),
+                "{}: {:?}",
+                help.view,
+                help.global
+            );
+            assert!(!help.global.iter().any(|(_, l)| l.contains("UI zoom")));
+        }
+        if !cfg!(target_os = "macos") {
+            assert_eq!(keys, "ctrl + / ctrl −");
+            assert!(label.starts_with("text size · ctrl 0 reset"));
         }
     }
     #[test]

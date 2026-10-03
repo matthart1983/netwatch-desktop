@@ -85,7 +85,8 @@ Useful flags:
 | `--tab <name>` | Opens on a tab: `dashboard`, `connections`, `interfaces`, `packets`, `stats`, `topology`, `timeline`, `processes`, `diagnose`, `egress`. |
 | `--view full\|lite\|dense` | Starts in a view. `--lite` is short for `--view lite`. |
 | `--no-sandbox` / `--sandbox-strict` | Overrides config.toml's `sandbox` for this launch, as in the TUI. |
-| `--zoom 1-4` | In dense view, opens with one box zoomed. |
+| `--text-size <percent>` | Text size for this launch only, 100 to 300 (for example `--text-size 150`). The saved size is unchanged unless you change it in the app. |
+| `--dense-box 1-4` | In dense view, opens with one box zoomed. `--zoom` still works but is deprecated. |
 | `--sheet <name>` | Opens a sheet: `settings`, `recorder`, `firstrun`, `palette`, `help`. |
 | `--theme <name>` | Starts with a palette (see [themes](#themes-and-graphs)). |
 | `--window-size WxH` | Sets the initial window size in logical pixels. |
@@ -135,7 +136,7 @@ Every tab shares one frame:
 - The timeline dock sits under the dashboard, connections and diagnose.
 - The footer lists the keys the current tab responds to. Every hint is clickable and does the same thing as the key. Results of writes (exports, policy changes, config saves) show at the right with their path.
 
-Below 1180 points wide the navigator shrinks to a rail of digits; below 1000 the inspector moves into a sheet opened with `I`. Points are window pixels divided by the interface zoom, so at the default zoom of 1.15 that's about 1357 and 1150 pixels; `ctrl -` brings the navigator back on a smaller screen. The menu and palette can also collapse the navigator and hide the timeline dock, and the dock gives up height in short windows.
+Below 1180 points wide the navigator shrinks to a rail of digits; below 1000 the inspector moves into a sheet opened with `I`. Points are window pixels divided by the text size, so at the default 115% that's about 1357 and 1150 pixels; `ctrl -` brings the navigator back on a smaller screen. The menu and palette can also collapse the navigator and hide the timeline dock, and the dock gives up height in short windows.
 
 ## Keys
 
@@ -162,7 +163,11 @@ Global keys work on every tab unless a sheet is open.
 | `,` | settings |
 | `?` | every key for the current tab, or for dense and lite in those views |
 | `q` | quit |
-| `ctrl +` / `ctrl -` / `ctrl 0` | zoom the interface (shared across all views) |
+| `ctrl +` / `ctrl -` / `ctrl 0` | larger or smaller text, or back to 115% (shared across all views). `ctrl` + scroll and trackpad pinch also work |
+
+### Text size
+
+Text size scales the whole interface, from 100% to 300%, and is shared by all three views. Change it from the `☰` menu (`−`, `+`, `reset` and a list of sizes), the command palette (type "text size"), the "this app" group in settings, lite's own `☰ menu`, the picker at the top of the first-run sheet, or the keys above. Every change applies at once, says the new size, and is saved in `desktop.toml`. `--text-size` sets it for one launch.
 
 ## The ten tabs
 
@@ -202,7 +207,7 @@ All three views run on the same backend. Switching views never restarts collecto
 
 ![Dense view](docs/screenshots/dense.png)
 
-**Dense** packs four boxes: mirrored throughput with session totals, interfaces, health with rtt budget meters, and connections with the selected socket's kernel state above the table. `1`-`4` zoom a box. Dense uses the same text sizes and interface zoom as full and lite. In the connections box `g` cycles grouping, `space` and `Z` fold groups. `ctrl +` / `ctrl -` adjusts the shared interface zoom; switching views keeps text the same size. See [docs/DENSE.md](docs/DENSE.md).
+**Dense** packs four boxes: mirrored throughput with session totals, interfaces, health with rtt budget meters, and connections with the selected socket's kernel state above the table. `1`-`4` zoom a box. Dense uses the same text sizes and interface zoom as full and lite. In the connections box `g` cycles grouping, `space` and `Z` fold groups. `ctrl +` / `ctrl -` adjusts the shared text size; switching views keeps text the same size. See [docs/DENSE.md](docs/DENSE.md).
 
 <img src="docs/screenshots/lite.png" alt="Lite view" width="540">
 
@@ -233,7 +238,7 @@ The UI uses IBM Plex Mono throughout and IBM Plex Sans for first-run prose, with
 Two files:
 
 - `~/.config/netwatch/config.toml` is netwatch's own config, shared with the TUI: theme, graph style, refresh rate, capture interface, BPF filter, GeoIP, alerts, AI insights, sandbox mode and so on. Edit it with the settings sheet.
-- `~/.config/netwatch/desktop.toml` holds the desktop's layout: the last tab and view, theme, shared interface zoom, dense grouping, dock height, the lite window size, per-tab choices (sort, grouping, filters) and recent palette commands. Set `NETWATCH_DESKTOP_PREFS` to use another path.
+- `~/.config/netwatch/desktop.toml` holds the desktop's layout: the last tab and view, theme, text size (`zoom`), dense grouping, dock height, the lite window size, per-tab choices (sort, grouping, filters) and recent palette commands. Set `NETWATCH_DESKTOP_PREFS` to use another path. It's written atomically. A value that doesn't fit, such as an unknown tab, falls back on its own; a file that isn't valid TOML is copied to `desktop.toml.bak` and the layout starts from defaults.
 
 Exports go to `~/.cache/netwatch/exports/`. The egress policy lives at `~/.config/netwatch/egress-policy.toml`.
 

@@ -13,7 +13,7 @@ use crate::screens;
 use crate::sheets::{self, Entry, Help, Palette};
 pub use crate::shell::Tab;
 use crate::shell::{Cx, Filter, Hint, Key, Nav, Screen, Shared, Sheet, SheetKey, Toast};
-use crate::{theme, ui_kit};
+use crate::{theme, ui_kit, zoom};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
@@ -63,6 +63,10 @@ pub struct Options {
     pub system_decorations: bool,
     /// How the session was started, so a failed start can be retried.
     pub demo: bool,
+    /// `--text-size`: this launch's text size, not saved unless changed.
+    pub text_size: Option<f32>,
+    /// Shown as a toast at launch: why saved layout was reset.
+    pub notice: Option<String>,
 }
 
 impl Default for Options {
@@ -73,6 +77,8 @@ impl Default for Options {
             demo: false,
             ephemeral: true,
             system_decorations: true,
+            text_size: None,
+            notice: None,
         }
     }
 }
@@ -105,6 +111,12 @@ pub struct DesktopApp {
     toast: Option<Toast>,
     last_action: u64,
     prefs: Prefs,
+    /// Where `prefs` saves: `desktop.toml` or `NETWATCH_DESKTOP_PREFS`.
+    prefs_path: Option<std::path::PathBuf>,
+    /// The text size asked for last. `ctx.zoom_factor()` only follows on
+    /// the next frame, so changes within one frame build on this.
+    zoom: f32,
+    zoom_gesture: zoom::Gesture,
     prefs_dirty: bool,
     prefs_saved_at: Instant,
     capture: crate::capture::Capture,
@@ -186,9 +198,12 @@ impl DesktopApp {
             lite: Default::default(),
             timeline: Default::default(),
             sheet: None,
-            toast: None,
+            toast: options.notice.map(Toast::err),
             last_action: 0,
+            zoom: zoom::sanitize(options.text_size.unwrap_or(prefs.zoom)),
+            zoom_gesture: zoom::Gesture::default(),
             prefs,
+            prefs_path: Prefs::path(),
             prefs_dirty: false,
             prefs_saved_at: Instant::now(),
             capture: crate::capture::Capture::from_args(),
@@ -673,6 +688,63 @@ impl DesktopApp {
         self.toast = Some(Toast::ok(format!("theme {}", next.name)));
     }
 
+    /// First frame: the saved or `--text-size` text size, the app's own
+    /// zoom keys in place of egui's, and lite's on-top level.
+    fn start(&mut self, ctx: &egui::Context) {
+        ctx.options_mut(|o| o.zoom_with_keyboard = false);
+        ctx.set_zoom_factor(self.zoom);
+        if self.view == View::Lite && self.prefs.lite_on_top {
+            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                egui::WindowLevel::AlwaysOnTop,
+            ));
+        }
+    }
+
+    /// Every text-size control lands here: keys, ctrl-scroll and pinch, ☰,
+    /// palette, settings, lite and first run. Applies now in every view,
+    /// saves, and says the new size.
+    fn change_zoom(&mut self, ctx: &egui::Context, change: zoom::Change) {
+        self.zoom = change.apply(self.zoom);
+        ctx.set_zoom_factor(self.zoom);
+        if self.prefs.zoom != self.zoom {
+            self.prefs.zoom = self.zoom;
+            self.prefs_dirty = true;
+        }
+        self.toast = Some(Toast::ok(zoom::toast(self.zoom)));
+    }
+
+    /// ctrl or ⌘ with + = − 0, wherever focus is, and ctrl-scroll or pinch.
+    fn zoom_input(&mut self, ctx: &egui::Context) {
+        let (changes, factor, time) = ctx.input(|i| {
+            let changes: Vec<zoom::Change> = i
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } => zoom::key_change(*key, *modifiers),
+                    _ => None,
+                })
+                .collect();
+            (changes, i.zoom_delta(), i.time)
+        });
+        for change in changes {
+            self.change_zoom(ctx, change);
+        }
+        let steps = self.zoom_gesture.feed(factor, time);
+        let change = if steps > 0 {
+            zoom::Change::Larger
+        } else {
+            zoom::Change::Smaller
+        };
+        for _ in 0..steps.unsigned_abs() {
+            self.change_zoom(ctx, change);
+        }
+    }
+
     fn dense_key(&mut self, ctx: &egui::Context, key: Key, s: Option<&Snapshot>) {
         use crate::dense::Panel;
         match key {
@@ -822,6 +894,7 @@ impl DesktopApp {
                 }));
             }
             Nav::OpenFirstRun => self.open_sheet("firstrun", s),
+            Nav::Zoom(change) => self.change_zoom(ctx, change),
             Nav::ToggleBtop | Nav::ToggleFade => {
                 let mut look = theme::graphs();
                 if nav == Nav::ToggleBtop {
@@ -963,6 +1036,49 @@ impl DesktopApp {
             "",
             Nav::OpenFirstRun,
         ));
+        // Tab never reaches a ☰ row, so the palette is the keyboard's way
+        // to every text size.
+        // The details carry the words people search for: zoom, font, bigger.
+        let now = zoom::label(self.zoom);
+        for (label, words, key, change) in [
+            (
+                "text size: larger".to_string(),
+                "zoom in, bigger font",
+                "+",
+                zoom::Change::Larger,
+            ),
+            (
+                "text size: smaller".to_string(),
+                "zoom out, smaller font",
+                "−",
+                zoom::Change::Smaller,
+            ),
+            (
+                format!("text size: reset to {}", zoom::label(zoom::DEFAULT)),
+                "zoom, font size",
+                "0",
+                zoom::Change::Reset,
+            ),
+        ] {
+            entries.push(command(
+                &label,
+                &format!("now {now} · {words}"),
+                &zoom::chord(key),
+                Nav::Zoom(change),
+            ));
+        }
+        for preset in zoom::PRESETS {
+            entries.push(command(
+                &format!("text size: {}", zoom::label(preset)),
+                if zoom::percent(preset) == zoom::percent(self.zoom) {
+                    "current"
+                } else {
+                    ""
+                },
+                "",
+                Nav::Zoom(zoom::Change::To(preset)),
+            ));
+        }
         for tab in Tab::ALL {
             entries.push(Entry {
                 group: "jump",
@@ -1075,9 +1191,16 @@ impl DesktopApp {
             }
         }
         self.record_window(ctx);
-        let _ = self.prefs.save();
+        if let Err(e) = self.write_prefs() {
+            self.toast = Some(Toast::err(format!("✕ layout not saved · {e}")));
+        }
         self.prefs_dirty = false;
         self.prefs_saved_at = Instant::now();
+    }
+
+    fn write_prefs(&self) -> Result<(), String> {
+        let path = self.prefs_path.as_ref().ok_or("no config directory")?;
+        self.prefs.save_to(path)
     }
 }
 
@@ -1092,25 +1215,13 @@ impl eframe::App for DesktopApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.theme_applied.is_none() {
+            self.start(ctx);
+        }
         if self.theme_applied != Some(theme::current().name) {
-            if self.theme_applied.is_none() {
-                ctx.set_zoom_factor(self.prefs.zoom.clamp(0.75, 2.5));
-                if self.view == View::Lite && self.prefs.lite_on_top {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
-                        egui::WindowLevel::AlwaysOnTop,
-                    ));
-                }
-            }
             theme::apply(ctx);
             self.theme_applied = Some(theme::current().name);
         }
-        // Every view shares the same text scale and whole-interface zoom.
-        let zoom = ctx.zoom_factor();
-        if (zoom - self.prefs.zoom).abs() > 0.001 {
-            self.prefs.zoom = zoom;
-            self.prefs_dirty = true;
-        }
-        ctx.options_mut(|o| o.zoom_with_keyboard = true);
         ctx.request_repaint_after(Duration::from_millis(if self.shared.controls.animate {
             100
         } else {
@@ -1175,6 +1286,7 @@ impl eframe::App for DesktopApp {
         }
 
         if !self.capture.active() {
+            self.zoom_input(ctx);
             let (keys, palette, copy) =
                 Self::collect_keys(ctx, std::mem::take(&mut self.tab_presses));
             if palette && self.sheet.is_none() {
@@ -1221,7 +1333,9 @@ impl eframe::App for DesktopApp {
                     self.prefs.tabs.insert(screen.tab().name().into(), state);
                 }
             }
-            let _ = self.prefs.save();
+            if let Err(e) = self.write_prefs() {
+                eprintln!("netwatch-desktop: layout not saved: {e}");
+            }
         }
     }
 }
@@ -1598,6 +1712,9 @@ impl DesktopApp {
         let look = theme::graphs();
         ui.menu_button(ui_kit::mono("☰ menu", theme::LABEL, theme::text2()), |ui| {
             ui.set_min_width(250.0);
+            if let Some(change) = zoom::menu(ui, self.zoom) {
+                nav.push(Nav::Zoom(change));
+            }
             ui_kit::section(ui, "graphs");
             let mut btop = look.btop;
             if ui
@@ -1820,12 +1937,7 @@ impl DesktopApp {
             None => hints = self.startup_hints(),
         }
         let full = ui.max_rect();
-        // Successes fade after 8 s; failures stay 20 s.
-        let toast = self
-            .toast
-            .as_ref()
-            .filter(|t| t.at.elapsed() < Duration::from_secs(if t.ok { 8 } else { 20 }))
-            .cloned();
+        let toast = self.toast.as_ref().filter(|t| t.fresh()).cloned();
         let font = FontId::monospace(theme::LABEL);
         let toast_w = toast
             .as_ref()
@@ -1957,7 +2069,7 @@ impl DesktopApp {
                                 theme::error(),
                             );
                         }
-                        if let Some(toast) = &self.toast {
+                        if let Some(toast) = self.toast.as_ref().filter(|t| t.fresh()) {
                             ui.add(
                                 egui::Label::new(ui_kit::mono(
                                     &toast.text,
@@ -2516,6 +2628,465 @@ mod tests {
         app.graphs_config = Some(("bars".into(), true));
         app.sync_graphs(&s);
         assert!(theme::graphs().btop);
+    }
+    /// Drives whole frames the way `update` does: the app's zoom input, then
+    /// the view and any sheet.
+    struct Frames {
+        ctx: egui::Context,
+        time: f64,
+        s: Snapshot,
+    }
+    impl Frames {
+        fn new() -> Self {
+            let ctx = egui::Context::default();
+            theme::install_fonts(&ctx);
+            theme::apply(&ctx);
+            Self {
+                ctx,
+                time: 0.0,
+                s: crate::backend::tests::snapshot(),
+            }
+        }
+        /// The first frame `update` runs, then one more so the size applies.
+        fn launch(&mut self, app: &mut DesktopApp) {
+            let _ = self.ctx.run(Default::default(), |ctx| app.start(ctx));
+            self.run(app, vec![]);
+        }
+        fn run(&mut self, app: &mut DesktopApp, events: Vec<egui::Event>) -> egui::FullOutput {
+            self.time += 1.0 / 60.0;
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1440.0, 900.0))),
+                time: Some(self.time),
+                events,
+                // Dense bakes graph textures wider than egui's 2048 default.
+                max_texture_side: Some(8192),
+                ..Default::default()
+            };
+            let s = &self.s;
+            self.ctx.run(input, |ctx| {
+                app.zoom_input(ctx);
+                match app.view {
+                    View::Lite => app.draw_lite(ctx, Some(s)),
+                    View::Dense => app.draw_dense(ctx, Some(s), Some(s)),
+                    View::Full => app.draw_full(ctx, Some(s), Some(s)),
+                }
+                app.draw_sheet(ctx, Some(s));
+            })
+        }
+        /// Clicks the last text shape reading `text` (popups paint last).
+        fn click(&mut self, app: &mut DesktopApp, text: &str) {
+            let out = self.run(app, vec![]);
+            let at = texts_at(&out)
+                .into_iter()
+                .rev()
+                .find(|(t, _)| t == text)
+                .map(|(_, at)| at)
+                .unwrap_or_else(|| panic!("no {text:?} on screen"));
+            self.click_at(app, at);
+        }
+        fn click_at(&mut self, app: &mut DesktopApp, at: egui::Pos2) {
+            let button = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            self.run(app, vec![egui::Event::PointerMoved(at)]);
+            self.run(app, vec![button(true)]);
+            self.run(app, vec![button(false)]);
+            self.run(app, vec![]);
+        }
+        fn key(&mut self, app: &mut DesktopApp, key: egui::Key) {
+            let event = egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            };
+            self.run(app, vec![event]);
+            self.run(app, vec![]);
+        }
+    }
+    fn texts_at(out: &egui::FullOutput) -> Vec<(String, egui::Pos2)> {
+        fn walk(shape: &egui::Shape, acc: &mut Vec<(String, egui::Pos2)>) {
+            match shape {
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, acc)),
+                egui::Shape::Text(t) => acc.push((
+                    t.galley.text().to_string(),
+                    t.galley.rect.translate(t.pos.to_vec2()).center(),
+                )),
+                _ => {}
+            }
+        }
+        let mut acc = Vec::new();
+        for clipped in &out.shapes {
+            walk(&clipped.shape, &mut acc);
+        }
+        acc
+    }
+    fn app_with(prefs: Prefs) -> DesktopApp {
+        DesktopApp::with_options(Backend::preview(), Options::default(), prefs)
+    }
+    #[test]
+    fn zoom_nan_in_desktop_toml_launches_at_115_percent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("desktop.toml");
+        std::fs::write(&path, "zoom = nan\ntab = \"stats\"").unwrap();
+        let (prefs, note) = Prefs::load_from(&path);
+        assert!(note.is_none());
+        assert_eq!(prefs.tab, Tab::Stats);
+        let mut app = app_with(prefs);
+        let mut f = Frames::new();
+        f.launch(&mut app);
+        let out = f.run(&mut app, vec![]);
+        assert_eq!(f.ctx.zoom_factor(), 1.15);
+        assert_eq!(out.pixels_per_point, 1.15);
+        // Even a NaN that reaches the app directly is never handed to egui.
+        let mut app = app_with(Prefs {
+            zoom: f32::NAN,
+            ..Default::default()
+        });
+        let mut f = Frames::new();
+        f.launch(&mut app);
+        assert_eq!(f.ctx.zoom_factor(), 1.15);
+    }
+    #[test]
+    fn ctrl_keys_step_presets_and_ctrl_0_gives_115_percent() {
+        let mut app = app_with(Prefs::default());
+        let mut f = Frames::new();
+        f.launch(&mut app);
+        f.key(&mut app, egui::Key::Equals);
+        assert_eq!(f.ctx.zoom_factor(), 1.25);
+        f.key(&mut app, egui::Key::Plus);
+        assert_eq!(f.ctx.zoom_factor(), 1.5);
+        f.key(&mut app, egui::Key::Minus);
+        assert_eq!(f.ctx.zoom_factor(), 1.25);
+        for _ in 0..10 {
+            f.key(&mut app, egui::Key::Plus);
+        }
+        assert_eq!(f.ctx.zoom_factor(), 3.0, "the ladder stops at 300%");
+        f.key(&mut app, egui::Key::Num0);
+        assert_eq!(f.ctx.zoom_factor(), 1.15);
+        assert_eq!(app.prefs.zoom, 1.15);
+        assert!(app.prefs_dirty);
+        let toast = app.toast.clone().unwrap();
+        assert!(
+            toast.ok && toast.text.starts_with("text size 115% · "),
+            "{toast:?}"
+        );
+        // Without ctrl, = and 0 are not text-size keys.
+        let plain = egui::Event::Key {
+            key: egui::Key::Num0,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        };
+        f.key(&mut app, egui::Key::Plus);
+        f.run(&mut app, vec![plain]);
+        f.run(&mut app, vec![]);
+        assert_eq!(f.ctx.zoom_factor(), 1.25);
+    }
+    #[test]
+    fn a_saved_300_percent_survives_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("desktop.toml");
+        let mut app = app_with(Prefs::default());
+        let mut f = Frames::new();
+        f.launch(&mut app);
+        let _ = f.ctx.run(Default::default(), |ctx| {
+            app.apply_nav(ctx, Nav::Zoom(zoom::Change::To(3.0)), None)
+        });
+        app.prefs.save_to(&path).unwrap();
+        let (prefs, _) = Prefs::load_from(&path);
+        assert_eq!(prefs.zoom, 3.0);
+        let mut app = app_with(prefs);
+        let mut f = Frames::new();
+        f.launch(&mut app);
+        assert_eq!(f.ctx.zoom_factor(), 3.0, "no longer cut to 2.5 at startup");
+    }
+    #[test]
+    fn startup_and_runtime_share_one_clamp() {
+        for (saved, launched) in [(9.0, zoom::MAX), (0.2, zoom::MIN), (1.3, 1.3)] {
+            let mut app = app_with(Prefs {
+                zoom: saved,
+                ..Default::default()
+            });
+            let mut f = Frames::new();
+            f.launch(&mut app);
+            assert_eq!(f.ctx.zoom_factor(), launched);
+            f.key(&mut app, egui::Key::Plus);
+            assert_eq!(f.ctx.zoom_factor(), zoom::step(launched, 1));
+            assert!((zoom::MIN..=zoom::MAX).contains(&f.ctx.zoom_factor()));
+        }
+    }
+    #[test]
+    fn plus_in_the_menu_changes_the_zoom_and_the_saved_size() {
+        let mut app = app_with(Prefs::default());
+        let mut f = Frames::new();
+        f.launch(&mut app);
+        f.click(&mut app, "☰ menu");
+        f.click(&mut app, "+");
+        assert_eq!(f.ctx.zoom_factor(), 1.25);
+        assert_eq!(app.prefs.zoom, 1.25);
+        assert!(app.prefs_dirty);
+        // The menu stays open: a preset and reset are one click away.
+        f.click(&mut app, "200%");
+        assert_eq!((f.ctx.zoom_factor(), app.prefs.zoom), (2.0, 2.0));
+        f.click(&mut app, "reset");
+        assert_eq!((f.ctx.zoom_factor(), app.prefs.zoom), (1.15, 1.15));
+    }
+    #[test]
+    fn lite_has_its_own_menu_with_text_size_and_full_view() {
+        let mut app = app_with(Prefs::default());
+        app.view = View::Lite;
+        let mut f = Frames::new();
+        f.launch(&mut app);
+        f.click(&mut app, "☰ menu");
+        f.click(&mut app, "+");
+        assert_eq!((f.ctx.zoom_factor(), app.prefs.zoom), (1.25, 1.25));
+        // The toast shows in lite's title row.
+        let out = f.run(&mut app, vec![]);
+        assert!(texts_at(&out)
+            .iter()
+            .any(|(t, _)| t.starts_with("text size 125%")));
+        f.click(&mut app, "full view  L");
+        assert_eq!(app.view(), View::Full);
+    }
+    #[test]
+    fn lites_menu_is_labelled_24_pt_tall_and_says_what_it_holds() {
+        let lite = || {
+            let mut app = app_with(Prefs::default());
+            app.view = View::Lite;
+            let mut f = Frames::new();
+            f.launch(&mut app);
+            let out = f.run(&mut app, vec![]);
+            let at = texts_at(&out)
+                .into_iter()
+                .find(|(t, _)| t == "☰ menu")
+                .map(|(_, at)| at)
+                .expect("lite's ☰ is labelled");
+            (app, f, at)
+        };
+        let open = |app: &mut DesktopApp, f: &mut Frames| {
+            let out = f.run(app, vec![]);
+            texts_at(&out).iter().any(|(t, _)| t == "full view  L")
+        };
+        // 11 pt above or below the label's middle is still the button.
+        for dy in [-11.0, 11.0] {
+            let (mut app, mut f, at) = lite();
+            f.click_at(&mut app, at + vec2(0.0, dy));
+            assert!(open(&mut app, &mut f), "click {dy} pt from the middle");
+        }
+        let (mut app, mut f, at) = lite();
+        f.run(&mut app, vec![egui::Event::PointerMoved(at)]);
+        let mut tip = false;
+        for _ in 0..60 {
+            let out = f.run(&mut app, vec![]);
+            tip |= texts_at(&out)
+                .iter()
+                .any(|(t, _)| t == "text size · full view");
+        }
+        assert!(tip, "hovering ☰ says what is in it");
+        assert!(!open(&mut app, &mut f));
+    }
+    #[test]
+    fn first_run_offers_three_sizes_that_apply_at_once() {
+        let mut app = app_with(Prefs::default());
+        let mut f = Frames::new();
+        f.launch(&mut app);
+        app.open_sheet("firstrun", Some(&f.s));
+        // A new egui area is measured, unseen, on its first frame.
+        f.run(&mut app, vec![]);
+        let out = f.run(&mut app, vec![]);
+        let texts: Vec<String> = texts_at(&out).into_iter().map(|(t, _)| t).collect();
+        for size in ["Normal 115%", "Large 150%", "Larger 200%"] {
+            assert!(texts.iter().any(|t| t == size), "{size} in {texts:?}");
+        }
+        f.click(&mut app, "Large 150%");
+        assert_eq!((f.ctx.zoom_factor(), app.prefs.zoom), (1.5, 1.5));
+        assert!(
+            matches!(app.sheet, Some(ActiveSheet::Boxed(_))),
+            "the sheet stays up as the preview"
+        );
+        f.click(&mut app, "Larger 200%");
+        assert_eq!(f.ctx.zoom_factor(), 2.0);
+        f.click(&mut app, "Normal 115%");
+        assert_eq!(f.ctx.zoom_factor(), 1.15);
+    }
+    #[test]
+    fn ctrl_scroll_moves_one_preset_per_notch() {
+        let mut app = app_with(Prefs::default());
+        let mut f = Frames::new();
+        f.launch(&mut app);
+        let notch = |y: f32| egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: vec2(0.0, y),
+            modifiers: egui::Modifiers::COMMAND,
+        };
+        f.run(&mut app, vec![notch(1.0)]);
+        for _ in 0..30 {
+            f.run(&mut app, vec![]);
+        }
+        assert_eq!(f.ctx.zoom_factor(), 1.25);
+        f.time += 1.0;
+        f.run(&mut app, vec![notch(-1.0)]);
+        for _ in 0..30 {
+            f.run(&mut app, vec![]);
+        }
+        assert_eq!(f.ctx.zoom_factor(), 1.15);
+        // A trackpad pinch to ×1.5 moves two.
+        f.time += 1.0;
+        f.run(&mut app, vec![egui::Event::Zoom(1.5)]);
+        f.run(&mut app, vec![]);
+        assert_eq!(f.ctx.zoom_factor(), 1.5);
+        assert_eq!(app.prefs.zoom, 1.5);
+    }
+    #[test]
+    fn ctrl_scroll_back_one_notch_right_after_two_up_moves_one_preset() {
+        let mut app = app_with(Prefs::default());
+        let mut f = Frames::new();
+        f.launch(&mut app);
+        let notch = |y: f32| egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: vec2(0.0, y),
+            modifiers: egui::Modifiers::COMMAND,
+        };
+        // Notches 0.15 s apart, inside the pause that ends a gesture.
+        for (y, zoom) in [(1.0, 1.25), (1.0, 1.5), (-1.0, 1.25)] {
+            f.run(&mut app, vec![notch(y)]);
+            for _ in 0..8 {
+                f.run(&mut app, vec![]);
+            }
+            assert_eq!(f.ctx.zoom_factor(), zoom, "after notch {y}");
+        }
+    }
+    #[test]
+    fn the_palette_lists_every_text_size_and_runs_them() {
+        let mut app = app_with(Prefs::default());
+        let s = crate::backend::tests::snapshot();
+        let entries = app.palette_entries(&s);
+        let sizes: Vec<_> = entries
+            .iter()
+            .filter(|e| e.label.starts_with("text size: "))
+            .collect();
+        assert_eq!(sizes.len(), 3 + zoom::PRESETS.len());
+        assert!(sizes
+            .iter()
+            .any(|e| e.label == "text size: reset to 115%"
+                && e.action == Nav::Zoom(zoom::Change::Reset)));
+        assert!(sizes
+            .iter()
+            .any(|e| e.label == "text size: 115%" && e.detail == "current"));
+        let large = sizes
+            .iter()
+            .find(|e| e.label == "text size: 250%")
+            .unwrap()
+            .action
+            .clone();
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| {
+            app.apply_nav(ctx, large, Some(&s))
+        });
+        let _ = ctx.run(Default::default(), |_| {});
+        assert_eq!((ctx.zoom_factor(), app.prefs.zoom), (2.5, 2.5));
+    }
+    #[test]
+    fn the_palette_finds_text_size_by_zoom_font_and_bigger() {
+        let mut app = app_with(Prefs::default());
+        let s = crate::backend::tests::snapshot();
+        let entries = app.palette_entries(&s);
+        let top = |query: &str| {
+            let mut palette = Palette::new(entries.clone(), Vec::new());
+            palette.query = query.into();
+            palette.matches().first().map(|e| e.label.clone())
+        };
+        for query in ["zoom", "font", "font size"] {
+            let top = top(query).unwrap_or_default();
+            assert!(top.starts_with("text size: "), "{query}: {top}");
+        }
+        assert_eq!(top("bigger").as_deref(), Some("text size: larger"));
+        assert_eq!(top("zoom in").as_deref(), Some("text size: larger"));
+        assert_eq!(top("zoom out").as_deref(), Some("text size: smaller"));
+    }
+    #[test]
+    fn text_size_flag_is_for_this_launch_only() {
+        let mut app = DesktopApp::with_options(
+            Backend::preview(),
+            Options {
+                text_size: Some(2.0),
+                ..Default::default()
+            },
+            Prefs::default(),
+        );
+        let mut f = Frames::new();
+        f.launch(&mut app);
+        assert_eq!(f.ctx.zoom_factor(), 2.0);
+        assert_eq!(app.prefs.zoom, 1.15, "the saved size is untouched");
+        assert!(!app.prefs_dirty);
+        // Changing it in the app saves the new size as usual.
+        f.key(&mut app, egui::Key::Plus);
+        assert_eq!((f.ctx.zoom_factor(), app.prefs.zoom), (2.5, 2.5));
+    }
+    #[test]
+    fn toasts_fade_in_every_view() {
+        let aged = |ok: bool, secs: u64| Toast {
+            ok,
+            text: format!("toast {ok} {secs}"),
+            at: Instant::now() - Duration::from_secs(secs),
+        };
+        assert!(aged(true, 7).fresh() && !aged(true, 9).fresh());
+        assert!(aged(false, 19).fresh() && !aged(false, 21).fresh());
+        for view in [View::Full, View::Dense, View::Lite] {
+            let mut app = app_with(Prefs::default());
+            app.view = view;
+            let mut f = Frames::new();
+            f.launch(&mut app);
+            for (toast, shown) in [(aged(true, 1), true), (aged(true, 9), false)] {
+                let text = toast.text.clone();
+                app.toast = Some(toast);
+                let out = f.run(&mut app, vec![]);
+                let texts: Vec<String> = texts_at(&out).into_iter().map(|(t, _)| t).collect();
+                assert_eq!(
+                    texts.iter().any(|t| t.contains(&text)),
+                    shown,
+                    "{view:?} {text}: {texts:?}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn a_failed_save_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("not-a-directory");
+        std::fs::write(&file, "").unwrap();
+        let mut app = app_with(Prefs::default());
+        app.ephemeral = false;
+        app.prefs_path = Some(file.join("desktop.toml"));
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| app.save_prefs(ctx));
+        let toast = app.toast.take().unwrap();
+        assert!(!toast.ok, "{toast:?}");
+        assert!(toast.text.starts_with("✕ layout not saved · "), "{toast:?}");
+        let path = dir.path().join("desktop.toml");
+        app.prefs_path = Some(path.clone());
+        let _ = ctx.run(Default::default(), |ctx| app.save_prefs(ctx));
+        assert!(app.toast.is_none());
+        assert_eq!(Prefs::load_from(&path).0.zoom, 1.15);
+    }
+    #[test]
+    fn a_layout_reset_at_load_is_announced() {
+        let app = DesktopApp::with_options(
+            Backend::preview(),
+            Options {
+                notice: Some("desktop.toml is not valid TOML".into()),
+                ..Default::default()
+            },
+            Prefs::default(),
+        );
+        let toast = app.toast.unwrap();
+        assert!(!toast.ok && toast.text.contains("not valid TOML"));
     }
     #[test]
     fn theme_cycles_through_every_palette_and_back() {

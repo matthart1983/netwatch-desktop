@@ -4,7 +4,7 @@ Choose **Dense view** from the menu or command palette, or cycle Full → Lite �
 
 Dense uses the spec's four boxes with no navigator, timeline dock or application footer:
 
-Panel heights scale with the window (NET about 31%, IFACES/HEALTH about 24%, CONNS the rest). Tables size columns from the panel width and text size; optional columns drop first on narrow windows and graphs take the remaining width. Text uses the main view's type scale: 12-point data, 11-point labels and 10-point metadata, in the same bundled fonts. The saved interface zoom applies to every view (1.15 by default); Ctrl + / Ctrl − zooms all views and Ctrl 0 resets zoom. Dense only reduces spacing between controls and rows. The old separate `dense_text` preference is ignored.
+Panel heights scale with the window (NET about 31%, IFACES/HEALTH about 24%, CONNS the rest). Tables size columns from the panel width and text size; optional columns drop first on narrow windows and graphs take the remaining width. Text uses the main view's type scale: 12-point data, 11-point labels and 10-point metadata, in the same bundled fonts. The saved text size applies to every view (115% by default); Ctrl + / Ctrl − steps it in all views, Ctrl 0 returns to 115%, and the ☰ menu lists every size. Dense only reduces spacing between controls and rows. The old separate `dense_text` preference is ignored.
 
 - **1 NET:** mirrored btop throughput spanning the full retained 10-minute history. Link capacity scales the graph when known; otherwise an auto 1-2-5 range over the retained peak replaces the fixed 10 MB/s fallback. Manual ranges still apply. Current/peak/mean rates, session and lifetime byte/packet/drop counters. The SOCKET SIGNALS column shows concern mix, kernel TCP/PID/rate coverage, protocol and state mix, findings and the top peers by rate and socket count.
 - **2 IFACES:** rate-sorted interfaces with observed link state, RX/TX, session and lifetime totals, lifetime error/drop counters, wireless signal/retries when reported, and 10-minute histories whose height grows when there are few interfaces. Aggregate counters may count virtual-interface traffic more than once.
@@ -33,7 +33,7 @@ cargo clippy --offline --all-targets -- -D warnings
 cargo build --release --offline
 cargo test --offline dense::tests::dense_frame_cost_and_capacity_cache -- --ignored --nocapture
 ./target/debug/netwatch-desktop --graph-preview --view dense --window-size 1280x760 --screenshot /tmp/dense.png
-./target/debug/netwatch-desktop --graph-preview --view dense --zoom 4 --screenshot /tmp/dense-connections.png
+./target/debug/netwatch-desktop --graph-preview --view dense --dense-box 4 --screenshot /tmp/dense-connections.png
 ```
 
 The explicit debug performance check measured 1.87 ms median / 2.23 ms p95 for egui UI plus tessellation at 1440×900, with one NET capacity bake across 260 frames. The standalone graph check measured 0.195 ms median / 0.261 ms p95 with one capacity bake across 660 frames. These are CPU timings, not a GPU frame-rate guarantee. Native screenshots are checked separately at minimum/default sizes and in each panel zoom. Screenshot runs avoid activation and ignore shortcuts so incidental keyboard input cannot change the requested view.
