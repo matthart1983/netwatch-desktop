@@ -422,6 +422,46 @@ fn a_rail_too_short_for_every_tab_keeps_its_scroll_bar_drawn() {
     assert_eq!(scroll_handles(&window.ctx, &out, navigator), []);
 }
 
+/// 200% on a wide but short window, 960×410 pt: the tab list fills the
+/// full navigator's height, and the network tree and process list give
+/// way rather than squeeze into a sliver under it.
+#[test]
+fn a_short_full_navigator_keeps_its_tabs_and_drops_its_groups() {
+    let groups_in = |w: f32, h: f32| {
+        let mut window = Window::new(w, h, 2.0);
+        let mut app = full_view(Tab::Dashboard);
+        let out = window.settle(&mut app);
+        assert_eq!(app.layout(&window.ctx).nav, NavMode::Full, "{w}×{h}");
+        let navigator = Rect::from_min_max(
+            pos2(0.0, theme::TITLE_HEIGHT),
+            pos2(
+                theme::NAV_WIDTH,
+                window.screen.bottom() - theme::FOOTER_HEIGHT,
+            ),
+        );
+        let texts: Vec<_> = seen(&out, window.screen)
+            .into_iter()
+            .filter(|t| navigator.contains_rect(t.rect))
+            .collect();
+        for tab in Tab::ALL {
+            assert!(
+                texts.iter().any(|t| t.text == tab.name() && t.whole),
+                "{} not written out at {w}×{h}",
+                tab.name()
+            );
+        }
+        ["network", "this machine", "gateway"]
+            .into_iter()
+            .filter(|group| texts.iter().any(|t| t.text == *group))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(groups_in(1920.0, 820.0), Vec::<&str>::new());
+    assert_eq!(
+        groups_in(1920.0, 1080.0),
+        ["network", "this machine", "gateway"]
+    );
+}
+
 #[test]
 fn a_tab_chosen_by_key_scrolls_into_a_short_rail() {
     let mut window = Window::new(1366.0, 768.0, 3.0);
