@@ -461,7 +461,10 @@ impl Graph {
                 font.clone(),
                 options.rx,
             );
-            if options.mirrored {
+            // A plot too short to keep the tags `gap` apart (dense's NET at
+            // its floor) drops TX, as crowded axis labels give way.
+            let tags_apart = plot.height() - 16.0 >= line * 2.0 + gap;
+            if options.mirrored && tags_apart {
                 axis.text(
                     plot.left_bottom() + vec2(8.0, -8.0),
                     Align2::LEFT_BOTTOM,

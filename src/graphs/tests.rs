@@ -364,3 +364,62 @@ fn cached_graph_frame_cost() {
     eprintln!("Cached 1440px graph incl. egui tessellation: median {:.3}ms · p95 {:.3}ms · max {:.3}ms · {} texture bake(s) over 660 frames",costs[costs.len()/2],costs[costs.len()*95/100],costs.last().unwrap(),graph.texture_builds);
     assert_eq!(graph.texture_builds, 1);
 }
+
+#[test]
+fn a_short_mirrored_plot_drops_its_tx_tag_rather_than_overlap_rx() {
+    let tags = |height: f32| {
+        let ctx = egui::Context::default();
+        let mut graph = Graph::default();
+        graph.update([(Instant::now(), Some(1.0), Some(1.0))], 1.0, 0.0);
+        let out = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(800.0, 400.0))),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    graph.draw(
+                        ui,
+                        Options {
+                            height,
+                            window: 60.0,
+                            ceiling: 100.0,
+                            mirrored: true,
+                            axes: true,
+                            animate: false,
+                            log: false,
+                            rx: theme::rx(),
+                            tx: theme::tx(),
+                            unit: Unit::Rate,
+                        },
+                    )
+                });
+            },
+        );
+        let mut tags: Vec<(String, Rect)> = out
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) if ["RX", "TX"].contains(&t.galley.text()) => Some((
+                    t.galley.text().to_string(),
+                    t.galley.rect.translate(t.pos.to_vec2()),
+                )),
+                _ => None,
+            })
+            .collect();
+        tags.sort_by(|a, b| a.0.cmp(&b.0));
+        tags
+    };
+    // Dense's NET at its floor: a plot about 27 pt tall has room for one.
+    let short = tags(69.0);
+    assert_eq!(
+        short.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(),
+        ["RX"]
+    );
+    let tall = tags(200.0);
+    assert_eq!(
+        tall.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(),
+        ["RX", "TX"]
+    );
+    assert!(!tall[0].1.intersects(tall[1].1));
+}

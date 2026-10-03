@@ -3758,24 +3758,25 @@ mod tests {
             assert!(matches!(app.sheet, Some(ActiveSheet::Inspector)));
             w.frame(app, draw);
         };
-        // 1440×900 at 150% is 960 pt wide, so I opens the sheet. Ctrl − to
-        // 125% makes it 1152 pt: the column is back, and drawing both was a
-        // debug panic (one id on two layers).
+        // 1440×900 at 150% is 960 pt wide, so I opens the sheet. Ctrl 0 to
+        // 115% makes it 1252 pt, past the 1180 the column needs beside the
+        // full navigator: the column is back, and drawing both was a debug
+        // panic (one id on two layers).
         let mut app = app_with(Prefs::default());
         app.stack.last_mut().unwrap().tab = Tab::Connections;
         let mut w = Window::new(vec2(1440.0, 900.0));
         w.frame(&mut app, |app, ctx| app.start(ctx));
         open(&mut w, &mut app);
         w.frame(&mut app, |app, ctx| {
-            app.change_zoom(ctx, zoom::Change::Smaller)
+            app.change_zoom(ctx, zoom::Change::Reset)
         });
         w.frame(&mut app, draw);
         w.frame(&mut app, draw);
-        assert_eq!(w.ctx.zoom_factor(), 1.25);
+        assert_eq!(w.ctx.zoom_factor(), 1.15);
         assert!(app.sheet.is_none());
-        // Widening the window past 1000 pt does the same.
+        // Widening the window past 1180 pt does the same: 1800 px at 150%.
         open(&mut w, &mut app);
-        w.px = vec2(1600.0, 900.0);
+        w.px = vec2(1800.0, 900.0);
         w.frame(&mut app, draw);
         w.frame(&mut app, draw);
         assert!(app.sheet.is_none());
