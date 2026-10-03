@@ -35,7 +35,7 @@ It is not a remote dashboard. There is no server and no second engine. The app s
 
 ### Linux
 
-Download a package from the [releases page](https://github.com/matthart1983/netwatch-desktop/releases). The x86_64 builds need glibc 2.35 or newer: Ubuntu 22.04, Debian 12, Fedora 36 or anything later. Each release lists its files' checksums in `SHA256SUMS`; check a download with `sha256sum -c --ignore-missing SHA256SUMS`.
+Download a package from the [releases page](https://github.com/matthart1983/netwatch-desktop/releases). The x86_64 builds need glibc 2.35 or newer: Ubuntu 22.04, Debian 12, Fedora 36 or anything later. Each release lists its files' checksums in `SHA256SUMS`; check a download with `sha256sum -c --ignore-missing SHA256SUMS`, or its build provenance with `gh attestation verify <file> -R matthart1983/netwatch-desktop`.
 
 On Debian or Ubuntu:
 
@@ -51,12 +51,13 @@ sudo dnf install ./netwatch-desktop-*.x86_64.rpm
 
 Both packages install `/usr/bin/netwatch-desktop`, add it to your desktop's app list, and grant it the one capability packet capture needs. [Permissions](#permissions) says which and why.
 
-The tarball needs libpcap, packaged as `libpcap0.8` on Debian and Ubuntu and as `libpcap` on Fedora. Extract it, grant capture to the binary, and run it:
+For anything else, the tarball holds the .deb's files under `bin/` and `share/`, and libpcap is built into the binary. Copy both into `/usr/local`, grant capture to the binary, and run it:
 
 ```sh
-tar xf netwatch-desktop-*-linux.tar.gz
-sudo setcap cap_net_raw=ep netwatch-desktop
-./netwatch-desktop
+tar xzf netwatch-desktop-linux-x86_64.tar.gz
+sudo cp -r netwatch-desktop-linux-x86_64/bin netwatch-desktop-linux-x86_64/share /usr/local/
+sudo setcap cap_net_raw=ep /usr/local/bin/netwatch-desktop
+netwatch-desktop
 ```
 
 On first launch a sheet shows what works, what needs a grant and the exact command for it. Press `↵` to carry on.
