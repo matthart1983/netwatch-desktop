@@ -1,0 +1,152 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to a pull request cancels its older run. Pushes to master get
+# a group per commit, so none is cancelled and every commit keeps a result.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The job to require on master. ubuntu-22.04 rather than latest: its glibc
+  # 2.35 is the floor the Linux release binaries are meant to run on.
+  linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      # The same list README's "On Debian or Ubuntu" gives, so this job also
+      # checks that a user following README has what the build needs.
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpcap-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      # The toolchain is unpinned stable and each Rust release adds lints, so a
+      # red clippy on an untouched branch is usually a toolchain bump, not a
+      # regression. Check `rustc --version` first.
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Build
+        run: cargo build --locked
+
+      - name: Test
+        run: cargo test --locked
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      # Fails on a vulnerability. Unmaintained and unsound notices are printed
+      # but don't fail the job: most come from the egui 0.28 and ratatui 0.27
+      # stacks and go away with those upgrades.
+      - name: Audit dependencies
+        run: cargo audit
+
+  # macOS has never been built. Allowed to fail until it's green, then it
+  # should be made required like linux.
+  macos:
+    runs-on: macos-14
+    timeout-minutes: 40
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --locked
+
+      - name: Test
+        run: cargo test --locked
+
+  # Allowed to fail until it's green.
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    continue-on-error: true
+    env:
+      # The runner has the Npcap SDK (below) but not Npcap itself, so a binary
+      # that imports wpcap.dll at load time dies with STATUS_DLL_NOT_FOUND
+      # before any test runs. Delay-loading defers that to the first capture
+      # call, which no test makes. netwatch's build.rs does the same for its
+      # own binaries; a link-arg there doesn't reach this crate.
+      RUSTFLAGS: -C link-arg=/DELAYLOAD:wpcap.dll -C link-arg=delayimp.lib
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # 1.13 is the SDK netwatch's build.rs fetches. npcap.com publishes no
+      # checksum, so the hash is the one first downloaded on 2026-10-03.
+      # NPCAP_SDK stops netwatch's build.rs downloading it a second time.
+      - name: Install the Npcap SDK
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP npcap-sdk.zip
+          $sdk = Join-Path $env:RUNNER_TEMP npcap-sdk
+          Invoke-WebRequest -Uri https://npcap.com/dist/npcap-sdk-1.13.zip -OutFile $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash
+          if ($hash -ne "dad1f2bf1b02b787be08ca4862f99e39a876c1f274bac4ac0cedc9bbc58f94fd") {
+            throw "npcap-sdk-1.13.zip has SHA256 $hash, not the pinned one"
+          }
+          Expand-Archive -Path $zip -DestinationPath $sdk
+          "NPCAP_SDK=$sdk" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "LIB=$sdk\Lib\x64;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Build
+        run: cargo build --locked
+
+      - name: Test
+        run: cargo test --locked
+
+  # Builds against netwatch main instead of the pinned release, so an API
+  # break shows up before the next netwatch release rather than after.
+  # Informational: the pin is what ships.
+  netwatch-main:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpcap-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+
+      # The grep fails the step if the sed matched nothing, so a reworded
+      # dependency line can't quietly test the crates.io release instead.
+      - name: Point the netwatch dependency at netwatch main
+        run: |
+          sed -i 's|^netwatch = { package = "netwatch-tui", version = "[^"]*"|netwatch = { package = "netwatch-tui", git = "https://github.com/matthart1983/netwatch", branch = "main"|' Cargo.toml
+          grep -F 'git = "https://github.com/matthart1983/netwatch", branch = "main"' Cargo.toml
+
+      # Not --locked: the lockfile has to move to the git source.
+      - name: Build
+        run: cargo build
+
+      - name: Test
+        run: cargo test
