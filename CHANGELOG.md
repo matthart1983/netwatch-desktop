@@ -4,9 +4,12 @@ All notable changes to netwatch desktop are listed here, newest first.
 
 ## [0.2.0] - unreleased
 
-The first public release. A fresh clone now builds from crates.io, text size has controls anyone can find, and nothing panics or drops out of reach at any size from 100% to 300%. Capture asks for one capability, exports are private to your user, and settings saves stop deleting what the terminal app wrote. Linux gets binaries. macOS and Windows build from source and are experimental.
+The first public release. A fresh clone now builds from crates.io, text size has controls anyone can find, and nothing panics or drops out of reach at any size from 100% to 300%. Capture asks for one capability, exports are private to your user, and settings saves stop deleting what the terminal app wrote. Linux gets a .deb, an .rpm and a tarball. macOS and Windows build from source and are experimental.
 
 ### Added
+- Linux x86_64 releases as a .deb, an .rpm and a tarball, with a `SHA256SUMS` file and a build provenance attestation for each file. They run on glibc 2.35 or newer: Ubuntu 22.04, Debian 12, Fedora 36 and later. 0.1.x needed glibc 2.43. libpcap is built into the binary, so the same build runs on Debian, Ubuntu and Fedora.
+- The .deb and .rpm grant `cap_net_raw=ep` as they install, so capture works without a manual `setcap`. Every upgrade or reinstall grants it again.
+- A window icon and app id, and a `.desktop` entry with icons from 16 to 512 pixels, so menus, docks and Wayland shells show the app's name and icon.
 - Text size controls. The `☰` menu has `−`, `+`, `reset` and a list of sizes. The palette has an entry for each, which also answers to "zoom", "font" and "bigger". Settings has a "this app" group, lite has its own `☰ menu`, and the first-run sheet starts with Normal, Large and Larger. Every change applies at once in all views, shows a toast and is saved.
 - `ctrl` or `⌘` with `+`, `=`, `−` and `0` handled by the app itself; `0` returns to the 115% default. `ctrl` with the scroll wheel and trackpad pinch move one size at a time.
 - `--text-size PERCENT` sets the text size for one launch without saving it.
@@ -56,6 +59,7 @@ The first public release. A fresh clone now builds from crates.io, text size has
 
 ### Known gaps
 - macOS and Windows have no binaries and haven't been tried by hand.
+- Started from Explorer, a Windows build opens a console window beside the app. Without it, the programs netwatch's collectors run on every refresh would each flash a console window.
 - Screen readers can read little beyond the navigator.
 - A capture grant needs a restart, and the app doesn't say so.
 - The app doesn't warn when run as root.
