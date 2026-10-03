@@ -311,17 +311,21 @@ impl FirstRun {
         let platform = PLATFORMS[self.platform];
         ui.horizontal(|ui| {
             ui.label(ui_kit::strong("◉ netwatch", 22.0, theme::accent()));
+            // Right-hand notes shorten before they reach the heading.
             ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                ui.label(ui_kit::mono(
-                    format!(
-                        "desktop {} · {} {} · first run",
-                        env!("CARGO_PKG_VERSION"),
-                        std::env::consts::OS,
-                        std::env::consts::ARCH
-                    ),
-                    theme::LABEL,
-                    theme::muted(),
-                ));
+                ui.add(
+                    egui::Label::new(ui_kit::mono(
+                        format!(
+                            "desktop {} · {} {} · first run",
+                            env!("CARGO_PKG_VERSION"),
+                            std::env::consts::OS,
+                            std::env::consts::ARCH
+                        ),
+                        theme::LABEL,
+                        theme::muted(),
+                    ))
+                    .truncate(),
+                );
             });
         });
         ui.horizontal(|ui| {
@@ -551,11 +555,14 @@ impl FirstRun {
                 theme::muted(),
             ));
             ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                ui.label(ui_kit::mono(
-                    "docs/REFERENCE.md#permissions",
-                    theme::META,
-                    theme::muted(),
-                ));
+                ui.add(
+                    egui::Label::new(ui_kit::mono(
+                        "docs/REFERENCE.md#permissions",
+                        theme::META,
+                        theme::muted(),
+                    ))
+                    .truncate(),
+                );
             });
         });
         ui.add_space(4.0);

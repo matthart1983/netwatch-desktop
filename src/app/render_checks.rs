@@ -189,6 +189,25 @@ fn seen(out: &egui::FullOutput, screen: Rect) -> Vec<Seen> {
         .collect()
 }
 
+/// Pairs of visible texts drawn over each other by more than 2×2 pt and a
+/// fifth of the smaller one.
+fn overlaps(texts: &[Seen]) -> Vec<String> {
+    let mut found = Vec::new();
+    for (i, a) in texts.iter().enumerate() {
+        for b in &texts[i + 1..] {
+            let (ra, rb) = (a.rect.shrink(1.0), b.rect.shrink(1.0));
+            let hit = ra.intersect(rb);
+            if hit.width() > 2.0
+                && hit.height() > 2.0
+                && hit.area() > 0.2 * ra.area().min(rb.area())
+            {
+                found.push(format!("{:?} × {:?}", a.text, b.text));
+            }
+        }
+    }
+    found
+}
+
 fn full_view(tab: Tab) -> DesktopApp {
     DesktopApp::new(Backend::preview(), tab)
 }
@@ -320,6 +339,74 @@ fn a_tab_chosen_by_key_scrolls_into_a_short_rail() {
     assert!(seen(&out, window.screen)
         .iter()
         .any(|t| t.text == "0" && t.whole && rail.contains_rect(t.rect)));
+}
+
+/// Every full-view tab at every text size, on a 1366×768 laptop, the
+/// default window and 1920×1080.
+#[test]
+fn no_tab_draws_text_over_text_at_any_text_size() {
+    let mut found = Vec::new();
+    for (w, h) in [(1366.0, 768.0), (1440.0, 900.0), (1920.0, 1080.0)] {
+        for zoom in zoom::PRESETS {
+            let mut window = Window::new(w, h, zoom);
+            for tab in Tab::ALL {
+                let out = window.settle(&mut full_view(tab));
+                for pair in overlaps(&seen(&out, window.screen)) {
+                    found.push(format!(
+                        "{} {w}×{h} {}: {pair}",
+                        tab.name(),
+                        zoom::label(zoom)
+                    ));
+                }
+            }
+        }
+    }
+    assert!(found.is_empty(), "overlapping text: {found:#?}");
+}
+
+/// The sheets, the ☰ menu, dense and lite, at each text size up to 200% on
+/// the default window and on 1920×1080.
+#[test]
+fn no_text_overlaps_up_to_200_percent_on_1440x900_and_larger() {
+    let mut found = Vec::new();
+    for (w, h) in [(1440.0, 900.0), (1920.0, 1080.0)] {
+        for zoom in zoom::PRESETS.into_iter().filter(|z| *z <= 2.0) {
+            let mut window = Window::new(w, h, zoom);
+            let screen = window.screen;
+            let mut check = |name: &str, out: &egui::FullOutput| {
+                for pair in overlaps(&seen(out, screen)) {
+                    found.push(format!("{name} {w}×{h} {}: {pair}", zoom::label(zoom)));
+                }
+            };
+            for view in [View::Dense, View::Lite] {
+                let mut app = full_view(Tab::Dashboard);
+                app.view = view;
+                let out = window.settle(&mut app);
+                check(view.name(), &out);
+            }
+            for sheet in ["settings", "recorder", "firstrun", "help", "palette"] {
+                let mut app = full_view(Tab::Dashboard);
+                window.settle(&mut app);
+                let s = window.s.clone();
+                app.open_sheet(sheet, Some(&s));
+                let out = window.settle(&mut app);
+                check(sheet, &out);
+            }
+            // Last: the menu's open state lives in the shared context.
+            let mut app = full_view(Tab::Dashboard);
+            let out = window.settle(&mut app);
+            let menu = seen(&out, window.screen)
+                .into_iter()
+                .find(|t| t.text == "☰ menu")
+                .expect("☰ menu in the title bar")
+                .rect
+                .center();
+            window.click(&mut app, menu);
+            let out = window.settle(&mut app);
+            check("☰ menu", &out);
+        }
+    }
+    assert!(found.is_empty(), "overlapping text: {found:#?}");
 }
 
 /// 200% on a 1366×768 laptop leaves connections too narrow for its

@@ -5,7 +5,7 @@ mod model;
 
 use crate::backend::{Command, Snapshot};
 use crate::shell::{Cx, Hint, Key, Screen, Tab};
-use crate::ui_kit::{self, PanelHead, StripGroup};
+use crate::ui_kit::{self, thin_labels, PanelHead, StripGroup};
 use crate::{format, theme};
 use egui::{pos2, vec2, Align, Align2, Color32, FontId, Rect, Sense, Ui};
 use model::{Amount, Family, Ring, Unit, Window};
@@ -118,23 +118,20 @@ fn card(
     painter.rect_filled(rect, 6.0, theme::panel());
     painter.rect_stroke(rect, 6.0, egui::Stroke::new(1.0_f32, theme::border()));
     let inner = rect.shrink2(vec2(10.0, 8.0));
-    ui_kit::paint_text(
+    let head = Rect::from_min_size(inner.min, vec2(inner.width(), 16.0));
+    let title_w = ui_kit::paint_text(
         ui,
-        Rect::from_min_size(inner.min, vec2(inner.width(), 16.0)),
+        head,
         title,
         theme::semibold(theme::LABEL),
         theme::accent(),
         Align::Min,
     );
-    if !tag.is_empty() {
-        text(
-            ui,
-            Rect::from_min_size(inner.min, vec2(inner.width(), 16.0)),
-            tag,
-            theme::LABEL,
-            theme::muted(),
-            Align::Max,
-        );
+    // The tag gives way to the title: it shortens, and goes when only an
+    // ellipsis would be left.
+    let room = Rect::from_min_max(pos2(head.left() + title_w + 6.0, head.top()), head.max);
+    if !tag.is_empty() && room.width() >= 24.0 {
+        text(ui, room, tag, theme::LABEL, theme::muted(), Align::Max);
     }
     let hero = Rect::from_min_size(inner.min + vec2(0.0, 17.0), vec2(inner.width(), 28.0));
     let w = ui_kit::paint_text(
@@ -668,41 +665,61 @@ impl Stats {
                 ui_kit::paint_mirrored_bars(ui, plot, &rx_b, &tx_b, ceiling);
                 let painter = ui.painter();
                 let font = FontId::monospace(theme::META);
-                for (y, label) in [
-                    (plot.top(), ui_kit::short_rate(ceiling)),
-                    (plot.center().y - 6.0, "0".to_string()),
-                    (plot.center().y + 6.0, "0".to_string()),
-                    (plot.bottom(), ui_kit::short_rate(ceiling)),
-                ] {
-                    painter.text(
-                        pos2(plot.left() - 8.0, y),
-                        Align2::RIGHT_CENTER,
-                        label,
-                        font.clone(),
-                        theme::muted(),
-                    );
+                // Short or narrow plots drop labels rather than stack them:
+                // the ceilings first, then the pair of zeros, then the ages
+                // from now backwards.
+                let line = ui.fonts(|f| f.row_height(&font));
+                let gap = line * 0.5;
+                let ceiling = ui_kit::short_rate(ceiling);
+                let values = [
+                    (vec![plot.top()], ceiling.as_str()),
+                    (vec![plot.bottom()], ceiling.as_str()),
+                    (vec![plot.center().y - 6.0, plot.center().y + 6.0], "0"),
+                ];
+                let spans: Vec<_> = values
+                    .iter()
+                    .map(|(ys, _)| (ys[0] - line / 2.0, ys[ys.len() - 1] + line / 2.0))
+                    .collect();
+                for ((ys, label), keep) in values.iter().zip(thin_labels(&spans, gap)) {
+                    for y in ys.iter().filter(|_| keep) {
+                        painter.text(
+                            pos2(plot.left() - 8.0, *y),
+                            Align2::RIGHT_CENTER,
+                            label,
+                            font.clone(),
+                            theme::muted(),
+                        );
+                    }
                 }
                 let secs = span.round() as u64;
-                let labels = [
-                    format!("−{}", ui_kit::age(secs)),
-                    format!("−{}", ui_kit::age(secs / 2)),
-                    "now".to_string(),
+                let ages = [
+                    (1.0, "now".to_string(), Align2::RIGHT_CENTER),
+                    (0.0, format!("−{}", ui_kit::age(secs)), Align2::LEFT_CENTER),
+                    (
+                        0.5,
+                        format!("−{}", ui_kit::age(secs / 2)),
+                        Align2::CENTER_CENTER,
+                    ),
                 ];
-                let n = labels.len();
-                for (i, label) in labels.iter().enumerate() {
-                    let f = i as f32 / (n - 1) as f32;
-                    let align = match i {
-                        0 => Align2::LEFT_CENTER,
-                        i if i == n - 1 => Align2::RIGHT_CENTER,
-                        _ => Align2::CENTER_CENTER,
-                    };
-                    painter.text(
-                        pos2(plot.left() + plot.width() * f, area.bottom() - 7.0),
-                        align,
-                        label,
-                        font.clone(),
-                        theme::muted(),
-                    );
+                let x = |f: f32| plot.left() + plot.width() * f;
+                let spans: Vec<_> = ages
+                    .iter()
+                    .map(|(f, label, align)| {
+                        let w = ui_kit::text_width(ui, label, font.clone());
+                        let left = x(*f) - w * align.x().to_factor();
+                        (left, left + w)
+                    })
+                    .collect();
+                for ((f, label, align), keep) in ages.iter().zip(thin_labels(&spans, gap)) {
+                    if keep {
+                        painter.text(
+                            pos2(x(*f), area.bottom() - 7.0),
+                            *align,
+                            label,
+                            font.clone(),
+                            theme::muted(),
+                        );
+                    }
                 }
                 ui.allocate_rect(area, Sense::hover());
             },

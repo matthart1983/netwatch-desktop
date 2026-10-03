@@ -572,18 +572,6 @@ impl Interfaces {
                     },
                 );
                 ui.horizontal(|ui| {
-                    ui.label(ui_kit::mono(
-                        if auto {
-                            format!(
-                                "link speed not reported · range fits peak {}",
-                                format::rate(ceiling)
-                            )
-                        } else {
-                            String::new()
-                        },
-                        theme::LABEL,
-                        theme::muted(),
-                    ));
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                         let (rx, tx) = match row.traffic {
                             Some(t) if row.up => (t.rx_rate, t.tx_rate),
@@ -599,6 +587,23 @@ impl Interfaces {
                             theme::LABEL,
                             theme::rx(),
                         ));
+                        // The rates come first; the note shortens in what
+                        // they leave instead of running under them.
+                        if auto {
+                            ui.with_layout(egui::Layout::left_to_right(Align::Center), |ui| {
+                                ui.add(
+                                    egui::Label::new(ui_kit::mono(
+                                        format!(
+                                            "link speed not reported · range fits peak {}",
+                                            format::rate(ceiling)
+                                        ),
+                                        theme::LABEL,
+                                        theme::muted(),
+                                    ))
+                                    .truncate(),
+                                );
+                            });
+                        }
                     });
                 });
             },

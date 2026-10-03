@@ -290,6 +290,9 @@ pub fn panel_with<R>(
                         }
                         ui.label(strong(head.title, theme::DATA, theme::accent()));
                         ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                            // Extras wider than the room beside the title are
+                            // cut at its edge, never drawn over it.
+                            ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
                             extra(ui);
                             if !head.meta.is_empty() {
                                 ui.add(
@@ -1296,6 +1299,25 @@ pub fn paint_mirrored_bars(
     bars.finish(ui);
 }
 
+/// Which axis labels to draw. `spans` are their extents along the axis,
+/// most important first; each is kept unless it would come within `gap` of
+/// one already kept.
+pub fn thin_labels(spans: &[(f32, f32)], gap: f32) -> Vec<bool> {
+    let mut kept: Vec<(f32, f32)> = Vec::new();
+    spans
+        .iter()
+        .map(|&(start, end)| {
+            let clear = kept
+                .iter()
+                .all(|&(a, b)| start >= b + gap || end + gap <= a);
+            if clear {
+                kept.push((start, end));
+            }
+            clear
+        })
+        .collect()
+}
+
 /// A labelled time axis beneath a plot: ≥3 stops plus `now`.
 pub fn time_axis(ui: &mut Ui, rect_x: egui::Rangef, labels: &[String]) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 14.0), Sense::hover());
@@ -1522,6 +1544,48 @@ mod fit_tests {
             }
         }
         found
+    }
+
+    #[test]
+    fn panel_header_extras_stop_at_the_title() {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let found = texts(&ctx, 260.0, vec![], 0.0, |ui| {
+            panel_with(
+                ui,
+                PanelHead::new("throughput").meta("rx peak 86M mean 50M"),
+                |ui| {
+                    ui.label("a key hint far too wide for this header");
+                },
+                |_| {},
+            );
+        });
+        let title = found.iter().find(|(t, _, _)| t == "throughput").unwrap();
+        assert!(title.2.contains_rect(title.1), "the title stays whole");
+        for (text, rect, clip) in &found {
+            if text != "throughput" {
+                let shown = rect.intersect(*clip);
+                assert!(
+                    !shown.intersects(title.1.shrink(1.0)),
+                    "{text:?} drawn over the title"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn axis_labels_give_way_in_priority_order() {
+        // Ceiling at 0, baseline at 100, a halfway mark crowding the
+        // ceiling: the mark goes, the others stay.
+        let spans = [(0.0, 12.0), (100.0, 112.0), (14.0, 26.0)];
+        assert_eq!(thin_labels(&spans, 6.0), [true, true, false]);
+        // With room for it, it stays.
+        let spans = [(0.0, 12.0), (100.0, 112.0), (50.0, 62.0)];
+        assert_eq!(thin_labels(&spans, 6.0), [true, true, true]);
+        // Only what clears every kept label: the third overlaps nothing
+        // kept once the second has given way.
+        let spans = [(0.0, 10.0), (8.0, 20.0), (18.0, 30.0)];
+        assert_eq!(thin_labels(&spans, 2.0), [true, false, true]);
     }
 
     #[test]
