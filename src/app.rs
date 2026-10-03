@@ -2560,6 +2560,8 @@ fn fit_breadcrumb(ui: &Ui, mut parts: Vec<String>, budget: f32) -> Vec<String> {
 mod render_checks;
 #[cfg(test)]
 mod render_matrix;
+#[cfg(test)]
+mod screenshots;
 
 #[cfg(test)]
 mod tests {

@@ -2,7 +2,7 @@
 
 A native desktop app for [netwatch](https://github.com/matthart1983/netwatch). It runs the same collectors, diagnose engine and egress linter as the terminal tool, in a window, with a mouse, a command palette and room to show more than 80 columns can hold.
 
-![Dashboard with the demo scenario](docs/screenshots/dashboard.png)
+![The dashboard. All screenshots are drawn from synthetic data](docs/screenshots/dashboard.png)
 
 It is not a remote dashboard. There is no server and no second engine. The app links the `netwatch` crate, starts its runtime on a background thread, and draws what that runtime sees on this machine.
 
@@ -169,6 +169,8 @@ Global keys work on every tab unless a sheet is open.
 
 Text size scales the whole interface, from 100% to 300%, and is shared by all three views. Change it from the `☰` menu (`−`, `+`, `reset` and a list of sizes), the command palette (type "text size"), the "this app" group in settings, lite's own `☰ menu`, the picker at the top of the first-run sheet, or the keys above. Every change applies at once, says the new size, and is saved in `desktop.toml`. `--text-size` sets it for one launch.
 
+![The ☰ menu's text size controls, at 150%](docs/screenshots/text-size-150.png)
+
 ## The ten tabs
 
 Each tab lists its own keys in the footer and in `?`.
@@ -217,7 +219,7 @@ All three views run on the same backend. Switching views never restarts collecto
 
 Sheets open over the current screen, which keeps updating underneath. `esc` closes any of them.
 
-![Command palette](docs/screenshots/palette.png)
+![The command palette, searching for text size](docs/screenshots/palette.png)
 
 - **Command palette** (`:`). Fuzzy search over commands, tab jumps, packet display filters and entities (hosts and processes). Every row shows the key that does the same thing. `/` narrows to filters, `>` to jumps, `@` to hosts and processes. `tab` completes, `↵` runs. Recent commands come first.
 - **Settings** (`,`). The netwatch `config.toml` grouped as appearance, refresh and capture, GeoIP, alerts, AI insights and security. `←` `→` cycle values, `↵` edits text, `S` saves. Invalid values are marked on the row. Below the settings is the live capability report.
@@ -276,12 +278,19 @@ cargo clippy --all-targets
 cargo fmt
 ```
 
-Visual checks use the screenshot flag:
+The screenshots in `docs/screenshots/` are drawn headless by the test suite from a synthetic snapshot (`src/app/screenshots/fixture.rs`): documentation addresses, made-up processes and PIDs, and netwatch's demo incident. After a visible change, redraw them:
 
 ```sh
-./target/debug/netwatch-desktop --demo --tab packets --window-size 1440x900 --screenshot /tmp/packets.png
-./target/debug/netwatch-desktop --demo --view dense --screenshot /tmp/dense.png
-./target/debug/netwatch-desktop --demo --sheet settings --screenshot /tmp/settings.png
+cargo test write_screenshots -- --ignored
+```
+
+A normal `cargo test` draws the same frames and fails if any of them shows an address outside the documentation ranges or this machine's host name, user name, interface names or addresses.
+
+For a quick look at the real window, `--screenshot` saves one PNG and exits. Use it with `--graph-preview`, which draws a synthetic snapshot. `--demo` adds the demo scenario on top of this machine's live data, so its screenshots show your addresses, processes and PIDs:
+
+```sh
+./target/debug/netwatch-desktop --graph-preview --tab dashboard --window-size 1440x900 --screenshot /tmp/dashboard.png
+./target/debug/netwatch-desktop --graph-preview --view dense --screenshot /tmp/dense.png
 ```
 
 Opt-in performance checks:
