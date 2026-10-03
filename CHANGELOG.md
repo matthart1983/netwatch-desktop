@@ -16,7 +16,7 @@ The first public release. A fresh clone now builds from crates.io, text size has
 - Screen readers get each navigator item's name and whether it's the current tab.
 - CI on Linux, macOS and Windows, with `cargo audit`, a build on the oldest supported Rust and a build against netwatch's main branch.
 - The render matrix: every tab, sheet and view at every text size on three common screens and each view's smallest window, rendered headless in CI.
-- README screenshots drawn headless from synthetic data, with a test that fails if any shows a real address or this machine's names. A new screenshot shows the text size controls at 150%.
+- A README screenshot of the text size controls at 150%.
 - SECURITY.md, CONTRIBUTING.md, this changelog, issue templates, and crates.io metadata.
 
 ### Changed
@@ -31,6 +31,7 @@ The first public release. A fresh clone now builds from crates.io, text size has
 - First run, lite and the sheets stack into one scrolling column in small windows, and first run's continue button stays on screen.
 - Control strips wrap whole groups onto the next line; narrow tables scroll sideways; crowded axis labels and notes thin out or shorten instead of overlapping.
 - README is rewritten for a first-time user: install, text size, permissions, the traffic the app sends, and known limitations.
+- README screenshots are drawn headless from synthetic data, with a test that fails if any shows a real address or this machine's names.
 
 ### Fixed
 - A probe netwatch couldn't send, such as a gateway that blocks ping and has no open TCP port, showed as a red dead link. It now shows as unmeasured, with the reason on hover and on the dashboard card.
@@ -52,7 +53,6 @@ The first public release. A fresh clone now builds from crates.io, text size has
 ### Security
 - Updates rustls to 0.23.45 for RUSTSEC-2026-0285.
 - Picks up netwatch's 0.32.4 security fixes, which 0.1.x lacked. Decrypted payloads in copied packet text lose their terminal control characters, and pcaps are written owner-only.
-- The README screenshots no longer show the author's network. They used to be captures of a live machine with `--demo` on top.
 
 ### Known gaps
 - macOS and Windows have no binaries and haven't been tried by hand.
