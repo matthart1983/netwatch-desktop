@@ -601,6 +601,37 @@ pub fn policy_diff(
     out
 }
 
+/// Destinations the block list matched, as `(process, label:port)`, sorted;
+/// for one process or, with `None`, every process. Promotion leaves these
+/// out.
+pub fn blocked_dests(e: &EgressSnapshot, process: Option<&str>) -> Vec<(String, String)> {
+    let mut out: Vec<_> = e
+        .verdicts
+        .iter()
+        .filter(|((p, _, _), v)| is_blocked(v) && process.is_none_or(|want| p == want))
+        .map(|((p, label, port), _)| (p.clone(), format!("{label}:{port}")))
+        .collect();
+    out.sort();
+    out
+}
+
+/// The review warning for a promotion that left blocked destinations out.
+pub fn left_out_warning(left_out: &[String]) -> Option<String> {
+    let n = left_out.len();
+    if n == 0 {
+        return None;
+    }
+    let shown = n.min(6);
+    let mut list = left_out[..shown].join(" · ");
+    if n > shown {
+        list.push_str(&format!(" · +{} more", n - shown));
+    }
+    Some(format!(
+        "Leaves out {n} blocked destination{} ({list}). Promotion never allows what the block list matches.",
+        if n == 1 { "" } else { "s" }
+    ))
+}
+
 /// A block list as `sni *.example.net`, `ip 10.0.0.0/8`, `asn X`, `port 25`.
 pub fn block_entries(block: &BlockList) -> Vec<String> {
     let mut out = Vec::new();

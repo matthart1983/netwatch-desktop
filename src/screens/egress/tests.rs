@@ -238,6 +238,88 @@ fn blocked_destination_leads_the_strip_and_cannot_be_allowed() {
     );
 }
 
+/// Adds `label:port`, blocked, to `process`, creating its profile if need
+/// be. The promotable rule stays as the backend leaves it, without it.
+fn add_blocked(screen: &mut TestScreen, process: &str, label: &str, port: u16) {
+    let mut data = (**screen.data.as_ref().unwrap()).clone();
+    if !data.profiles.iter().any(|p| p.process == process) {
+        data.profiles
+            .push(netwatch::collectors::egress::EgressProfile {
+                process: process.into(),
+                dests: Default::default(),
+                last_seen: std::time::SystemTime::now(),
+            });
+    }
+    let mut dest = data.profiles[0].dests[&("api.github.com".to_string(), 443)].clone();
+    dest.sni = Some(label.into());
+    dest.port = port;
+    data.profiles
+        .iter_mut()
+        .find(|p| p.process == process)
+        .unwrap()
+        .dests
+        .insert((label.into(), port), dest);
+    data.verdicts.insert(
+        (process.into(), label.into(), port),
+        Verdict::Blocked(format!("port {port} is blocked")),
+    );
+    screen.data = Some(Arc::new(data));
+}
+
+#[test]
+fn promotion_names_the_blocked_destinations_it_leaves_out() {
+    let s = Snapshot::empty();
+    let mut screen = with_block();
+    add_blocked(&mut screen, "node", "smtp.example", 25);
+    add_blocked(&mut screen, "mailer", "smtp.example", 25);
+    let mut h = Harness::new();
+
+    screen.selected = Some(Sel::Process("node".into()));
+    assert!(screen.key(Key::Char('w'), &mut h.cx(&s, None)));
+    let edit = screen
+        .pending
+        .take()
+        .expect("node still has drift to promote");
+    assert!(edit.policy().process["node"]
+        .allow_ip
+        .contains(&"203.0.113.9".into()));
+    assert!(!edit.policy().process["node"].allow_ports.contains(&25));
+    assert_eq!(
+        edit.warnings,
+        ["Leaves out 1 blocked destination (smtp.example:25). Promotion never allows what the block list matches."]
+    );
+
+    // Everything mailer reached is blocked, so there is no rule to write.
+    screen.selected = Some(Sel::Process("mailer".into()));
+    assert!(screen.key(Key::Char('w'), &mut h.cx(&s, None)));
+    assert!(screen.pending.is_none());
+    assert_eq!(
+        h.toast.as_ref().unwrap().text,
+        "nothing to promote for mailer · its observed destinations are blocked"
+    );
+    let texts = render(&mut screen, &s);
+    let want =
+        "nothing to promote for mailer · its observed destinations are blocked · nothing to write";
+    assert!(texts.iter().any(|t| t == want), "{texts:?}");
+    screen.selected = Some(Sel::Process("curl".into()));
+    let texts = render(&mut screen, &s);
+    let want = "left out, blocked: evil.example:443";
+    assert!(texts.iter().any(|t| t == want), "{texts:?}");
+
+    assert!(screen.key(Key::Char('P'), &mut h.cx(&s, None)));
+    let edit = screen.pending.as_ref().unwrap();
+    let policy = edit.policy();
+    assert!(!policy.process.contains_key("mailer"));
+    assert!(!policy.process["curl"]
+        .allow_sni
+        .contains(&"evil.example".into()));
+    assert_eq!(
+        edit.warnings,
+        ["Leaves out 3 blocked destinations (curl → evil.example:443 · mailer → smtp.example:25 · node → smtp.example:25). Promotion never allows what the block list matches."]
+    );
+    assert!(h.commands.is_empty());
+}
+
 #[test]
 fn tab_badge_and_navigator_show_the_block_list_state() {
     let mut s = Snapshot::empty();

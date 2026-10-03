@@ -14,7 +14,10 @@ use std::time::{Duration, Instant};
 use netwatch::app::{App, IfaceChangeEvent};
 use netwatch::collectors::{
     connections::{Connection, TrackedConnection},
-    egress::{EgressPolicy, EgressProfile, ProcessRule, RecentViolation, Verdict as EgressVerdict},
+    egress::{
+        EgressDest, EgressPolicy, EgressProfile, EgressProfiler, ProcessRule, RecentViolation,
+        Verdict as EgressVerdict,
+    },
     health::HealthStatus,
     network_intel::{Alert, DnsAnalytics},
     packets::{CapturedPacket, DnsCache, StreamTracker},
@@ -63,17 +66,20 @@ pub struct CaptureState {
     pub capturable: Vec<String>,
 }
 
+/// (process, destination label, port) → the profiler's verdict.
+pub type EgressVerdicts = HashMap<(String, String, u16), EgressVerdict>;
+
 #[derive(Clone, Default)]
 pub struct EgressSnapshot {
     pub profiles: Vec<EgressProfile>,
-    /// (process, destination label, port) → the profiler's verdict.
-    pub verdicts: HashMap<(String, String, u16), EgressVerdict>,
+    pub verdicts: EgressVerdicts,
     pub policy_path: Option<PathBuf>,
     pub policy: Option<EgressPolicy>,
     /// Unix permission bits of the policy file when it exists.
     pub policy_mode: Option<u32>,
     pub has_policy: bool,
-    /// What `promote_one` would write for each observed process.
+    /// What promotion may write for each observed process: `promote_one`'s
+    /// rule without its blocked destinations (see `without_blocked`).
     pub promotable: HashMap<String, ProcessRule>,
     pub recent: Vec<RecentViolation>,
     pub cooldown_secs: u64,
@@ -393,19 +399,7 @@ impl Snapshot {
         let egress = {
             let profiler = &app.egress_profiler;
             let profiles = profiler.snapshot();
-            let mut verdicts = HashMap::new();
-            let mut promotable = HashMap::new();
-            for profile in &profiles {
-                for ((label, port), dest) in &profile.dests {
-                    verdicts.insert(
-                        (profile.process.clone(), label.clone(), *port),
-                        profiler.verdict(&profile.process, dest),
-                    );
-                }
-                if let Some(rule) = profiler.promote_one(&profile.process) {
-                    promotable.insert(profile.process.clone(), rule);
-                }
-            }
+            let (verdicts, promotable) = judge_egress(profiler, &profiles);
             let policy_path = netwatch::collectors::egress::default_policy_path();
             let policy_mode = policy_path.as_deref().and_then(file_mode);
             EgressSnapshot {
@@ -540,6 +534,72 @@ impl Snapshot {
     pub fn host_name(&self, ip: &str) -> Option<String> {
         self.dns_names.as_ref().and_then(|c| c.lookup(ip))
     }
+}
+
+/// Each observed destination's verdict, and what promotion may write for
+/// each process.
+fn judge_egress(
+    profiler: &EgressProfiler,
+    profiles: &[EgressProfile],
+) -> (EgressVerdicts, HashMap<String, ProcessRule>) {
+    let mut verdicts = HashMap::new();
+    let mut promotable = HashMap::new();
+    for profile in profiles {
+        let mut dests = Vec::new();
+        for ((label, port), dest) in &profile.dests {
+            let verdict = profiler.verdict(&profile.process, dest);
+            dests.push((dest, matches!(verdict, EgressVerdict::Blocked(_))));
+            verdicts.insert((profile.process.clone(), label.clone(), *port), verdict);
+        }
+        if let Some(rule) = profiler
+            .promote_one(&profile.process)
+            .and_then(|rule| without_blocked(rule, &dests))
+        {
+            promotable.insert(profile.process.clone(), rule);
+        }
+    }
+    (verdicts, promotable)
+}
+
+/// What promotion may write for one process: `promote_one`'s rule less
+/// every entry that only blocked destinations contributed. Allowing a
+/// blocked destination changes nothing while the block stands, would admit
+/// it quietly once the block is lifted, and its port would widen the rule
+/// for every other destination. `None` when nothing unblocked is left to
+/// name, because a rule with no names or ports is unrestricted.
+fn without_blocked(mut rule: ProcessRule, dests: &[(&EgressDest, bool)]) -> Option<ProcessRule> {
+    if !dests.iter().any(|(_, blocked)| *blocked) {
+        return Some(rule);
+    }
+    // Per side (0 unblocked, 1 blocked): the entries each destination gives
+    // a promoted rule, as netwatch derives them: its sni, else its address,
+    // else its AS; and its port.
+    let mut sni: [HashSet<&str>; 2] = Default::default();
+    let mut ip: [HashSet<&str>; 2] = Default::default();
+    let mut asn: [HashSet<&str>; 2] = Default::default();
+    let mut ports: [HashSet<u16>; 2] = Default::default();
+    for (dest, blocked) in dests {
+        let side = usize::from(*blocked);
+        match (&dest.sni, dest.last_ip.as_str(), &dest.asn_org) {
+            (Some(name), _, _) => sni[side].insert(name.as_str()),
+            (None, "", Some(org)) => asn[side].insert(org.as_str()),
+            (None, "", None) => false,
+            (None, addr, _) => ip[side].insert(addr),
+        };
+        ports[side].insert(dest.port);
+    }
+    fn keep<T: Eq + std::hash::Hash>(sides: &[HashSet<T>; 2], value: T) -> bool {
+        !sides[1].contains(&value) || sides[0].contains(&value)
+    }
+    let named = |r: &ProcessRule| {
+        !(r.allow_sni.is_empty() && r.allow_ip.is_empty() && r.allow_asn.is_empty())
+    };
+    let had_names = named(&rule);
+    rule.allow_sni.retain(|v| keep(&sni, v.as_str()));
+    rule.allow_ip.retain(|v| keep(&ip, v.as_str()));
+    rule.allow_asn.retain(|v| keep(&asn, v.as_str()));
+    rule.allow_ports.retain(|p| keep(&ports, *p));
+    (!rule.allow_ports.is_empty() && (named(&rule) || !had_names)).then_some(rule)
 }
 
 #[cfg(unix)]
@@ -1089,6 +1149,125 @@ pub(crate) mod tests {
         h.dns_rtt_ms = Some(2000.0);
         h.dns_loss = netwatch::collectors::health::Loss::Measured(0.0);
         assert_eq!(s.health_color("dns"), crate::theme::text());
+    }
+    #[test]
+    fn promotion_leaves_out_what_the_block_list_matches() {
+        use netwatch::collectors::egress::{BlockList, EgressPolicy, EgressProfiler};
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // netwatch's persisted baseline, the one public way to seed profiles.
+        let dest = |label: &str, port: u16, sni: Option<&str>, ip: &str| {
+            let sni = sni.map_or("null".into(), |s| format!("\"{s}\""));
+            format!(
+                r#"{{"label":"{label}","port":{port},"sni":{sni},"asn_org":null,"ip":"{ip}","ech":false,"first_seen":{now},"last_seen":{now},"count":3}}"#
+            )
+        };
+        let curl = [
+            dest(
+                "api.github.com",
+                443,
+                Some("api.github.com"),
+                "140.82.112.5",
+            ),
+            // Blocked by port 25 globally; the same name on 443 is not.
+            dest("mail.example", 25, Some("mail.example"), "203.0.113.25"),
+            dest("mail.example", 443, Some("mail.example"), "203.0.113.25"),
+            // Blocked by curl's own block list.
+            dest("198.51.100.7", 8443, None, "198.51.100.7"),
+        ]
+        .join(",");
+        let mailer = dest("smtp.example", 25, Some("smtp.example"), "203.0.113.26");
+        let baseline = format!(
+            r#"{{"version":1,"profiles":[{{"process":"curl","dests":[{curl}]}},{{"process":"mailer","dests":[{mailer}]}}]}}"#
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("egress-profiles.json");
+        std::fs::write(&path, baseline).unwrap();
+        let mut profiler = EgressProfiler::new();
+        profiler.load_profiles(&path);
+        profiler.set_policy(Some(EgressPolicy {
+            block: BlockList {
+                ports: vec![25],
+                ..Default::default()
+            },
+            process: [(
+                "curl".to_string(),
+                ProcessRule {
+                    allow_sni: vec!["api.github.com".into()],
+                    allow_ports: vec![443],
+                    block: BlockList {
+                        ip: vec!["198.51.100.0/24".into()],
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )]
+            .into(),
+            ..Default::default()
+        }));
+        let (verdicts, promotable) = judge_egress(&profiler, &profiler.snapshot());
+        let blocked = |p: &str, l: &str, port: u16| {
+            matches!(
+                verdicts.get(&(p.into(), l.into(), port)),
+                Some(EgressVerdict::Blocked(_))
+            )
+        };
+        assert!(blocked("curl", "mail.example", 25));
+        assert!(blocked("curl", "198.51.100.7", 8443));
+        assert!(!blocked("curl", "mail.example", 443));
+        // netwatch's own promotion would allow all of it.
+        let raw = profiler.promote_one("curl").unwrap();
+        assert_eq!(raw.allow_ip, ["198.51.100.7"]);
+        assert_eq!(raw.allow_ports, [25, 443, 8443]);
+        let curl = &promotable["curl"];
+        assert_eq!(curl.allow_sni, ["api.github.com", "mail.example"]);
+        assert!(curl.allow_ip.is_empty() && curl.allow_asn.is_empty());
+        assert_eq!(curl.allow_ports, [443]);
+        // Nothing unblocked: no rule at all, since an empty one is
+        // unrestricted.
+        assert!(profiler.promote_one("mailer").is_some());
+        assert!(!promotable.contains_key("mailer"));
+    }
+    #[test]
+    fn promotion_without_blocked_destinations_is_netwatchs() {
+        let dest = |sni: Option<&str>, ip: &str, port: u16| EgressDest {
+            sni: sni.map(str::to_string),
+            asn_org: None,
+            port,
+            last_ip: ip.into(),
+            ech: false,
+            first_seen: std::time::SystemTime::now(),
+            last_seen: std::time::SystemTime::now(),
+            count: 1,
+            bytes_out: 0,
+            bytes_in: 0,
+            activity: VecDeque::new(),
+        };
+        let rule = ProcessRule {
+            allow_sni: vec!["api.github.com".into()],
+            allow_ip: vec!["10.0.0.7".into()],
+            allow_ports: vec![80, 443],
+            ..Default::default()
+        };
+        let (a, b) = (
+            dest(Some("api.github.com"), "140.82.112.5", 443),
+            dest(None, "10.0.0.7", 80),
+        );
+        let kept = without_blocked(rule.clone(), &[(&a, false), (&b, false)]).unwrap();
+        assert_eq!(kept.allow_sni, rule.allow_sni);
+        assert_eq!(kept.allow_ip, rule.allow_ip);
+        assert_eq!(kept.allow_ports, rule.allow_ports);
+        // The only named destination blocked: what is left names nothing,
+        // which would be unrestricted, so there is no rule.
+        let nameless = dest(None, "", 443);
+        let rule = ProcessRule {
+            allow_sni: vec!["api.github.com".into()],
+            allow_ports: vec![443],
+            ..Default::default()
+        };
+        assert!(without_blocked(rule, &[(&a, true), (&nameless, false)]).is_none());
     }
     #[test]
     fn ai_rows_rebuild_or_drop_the_collector() {

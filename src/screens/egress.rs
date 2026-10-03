@@ -349,21 +349,39 @@ impl Egress {
     fn promote(&mut self, cx: &mut Cx) -> bool {
         match self.selected_process() {
             Some(process) => {
+                let e = self.egress(cx.s);
+                let left_out: Vec<String> = model::blocked_dests(e, Some(&process))
+                    .into_iter()
+                    .map(|(_, dest)| dest)
+                    .collect();
                 let edit = self.policy_file(cx).and_then(|file| {
-                    let rule = self
-                        .egress(cx.s)
+                    let rule = e
                         .promotable
                         .get(&process)
-                        .ok_or_else(|| format!("nothing observed for {process}"))?;
+                        .ok_or_else(|| Self::nothing_to_promote(&process, !left_out.is_empty()))?;
                     file.merge(
                         &[(process.clone(), rule.clone())],
                         format!("Promote {process}"),
                     )
                 });
+                let edit = edit.map(|mut edit| {
+                    edit.warnings.extend(model::left_out_warning(&left_out));
+                    edit
+                });
                 self.review(cx, edit);
                 true
             }
             None => false,
+        }
+    }
+
+    /// Why `w` has nothing for a process: no profile, or nothing that
+    /// isn't blocked (see `backend::without_blocked`).
+    fn nothing_to_promote(process: &str, blocked: bool) -> String {
+        if blocked {
+            format!("nothing to promote for {process} · its observed destinations are blocked")
+        } else {
+            format!("nothing observed for {process}")
         }
     }
 
@@ -397,6 +415,14 @@ impl Egress {
             rules.sort_by(|a, b| a.0.cmp(&b.0));
             let title = format!("Promote all {} processes", rules.len());
             file.merge(&rules, title)
+        });
+        let left_out: Vec<String> = model::blocked_dests(self.egress(cx.s), None)
+            .into_iter()
+            .map(|(process, dest)| format!("{process} → {dest}"))
+            .collect();
+        let result = result.map(|mut edit| {
+            edit.warnings.extend(model::left_out_warning(&left_out));
+            edit
         });
         self.review(cx, result);
     }
@@ -626,8 +652,15 @@ impl Egress {
             ui.colored_label(theme::error(), format!("Policy refused: group/world-writable · chmod 644 {path}. No changes can be reviewed or written until this is fixed."));
             return;
         }
+        let left_out: Vec<String> = model::blocked_dests(e, Some(process))
+            .into_iter()
+            .map(|(_, dest)| dest)
+            .collect();
         let Some(new) = e.promotable.get(process) else {
-            ui.label(format!("nothing observed for {process} · nothing to write"));
+            ui.label(format!(
+                "{} · nothing to write",
+                Self::nothing_to_promote(process, !left_out.is_empty())
+            ));
             return;
         };
         let old = e.policy.as_ref().and_then(|p| p.process.get(process));
@@ -651,6 +684,9 @@ impl Egress {
             "observed additions: {}",
             model::diff_summary(old, new)
         ));
+        if !left_out.is_empty() {
+            ui.label(format!("left out, blocked: {}", left_out.join(" · ")));
+        }
         ui.small("Press w for the exact file diff and a write confirmation.");
     }
 }
