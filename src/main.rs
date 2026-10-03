@@ -1,3 +1,8 @@
+// Release builds on Windows are GUI programs, so launching one doesn't open a
+// console window next to it. The cost is that --help, --version and
+// --check-runtime print nothing there; a debug build still prints.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod app;
 mod backend;
 mod capture;
@@ -7,6 +12,7 @@ mod dense;
 mod egress_policy;
 mod format;
 mod graphs;
+mod identity;
 mod lite;
 mod prefs;
 mod preview;
@@ -240,7 +246,7 @@ fn main() -> eframe::Result<()> {
     let sheet = arg(&args, "--sheet");
     let theme_name = arg(&args, "--theme");
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
+        viewport: identity::apply(egui::ViewportBuilder::default())
             .with_title("netwatch")
             .with_decorations(!app_chrome)
             .with_active(!screenshot)

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=netwatch
+GenericName=Network Monitor
+Comment=See which programs on this computer use the network and what's wrong
+Exec=netwatch-desktop
+Icon=netwatch-desktop
+Terminal=false
+Categories=Network;Monitor;
+Keywords=network;bandwidth;connections;packets;latency;dns;firewall;
+StartupNotify=true
+StartupWMClass=netwatch-desktop
