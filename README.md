@@ -149,7 +149,7 @@ Useful flags:
 | `--window-size WxH` | Sets the initial window size in logical pixels. |
 | `--app-chrome` | Draws the app's own title bar and window controls instead of the system's. |
 | `--ephemeral` | Neither reads nor writes the saved layout (`desktop.toml`), and skips the first-run sheet. |
-| `--graph-preview` | Runs on a synthetic snapshot with no collectors and no probes. Used for graph and layout checks. |
+| `--graph-preview` | Runs on a synthetic snapshot with no collectors and no probes, and shows nothing read from this machine: no process details from `/proc`, no real paths. Used for graph and layout checks and for screenshots. |
 | `--check-runtime` | Starts the runtime headless, prints interface, capture, diagnose coverage, socket and PID counts and the capability report, then exits. |
 | `--screenshot <path>` | Saves a PNG of the window after about three seconds and exits. Runs with this flag neither read nor write saved layout. |
 | `--help` / `--version` | Usage or version. Unknown flags and bad values are rejected. |

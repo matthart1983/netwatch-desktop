@@ -1038,7 +1038,7 @@ impl Packets {
 
     fn permissions_card(&mut self, ui: &mut Ui, cx: &mut Cx, rect: Rect) {
         let s = cx.s;
-        let command = Self::grant_command();
+        let command = Self::grant_command(s);
         let failed = s.capture_state.error.is_some();
         let mut clicked = None;
         ui.allocate_ui_at_rect(rect, |ui| {

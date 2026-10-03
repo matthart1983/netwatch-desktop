@@ -1,5 +1,6 @@
 //! Deterministic graph fixture. Only --graph-preview uses this source; no
-//! collectors, probes or writes are started. Every screen carries a DEMO label.
+//! collectors, probes or writes are started, and nothing is read from this
+//! machine. Every screen carries a DEMO label.
 use crate::backend::Snapshot;
 use netwatch::collectors::{health::HealthProber, tcp_info::FlowMap, traffic::InterfaceTraffic};
 use std::{
@@ -7,6 +8,9 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+/// The export directory a preview shows.
+pub const PREVIEW_EXPORTS: &str = "~/.cache/netwatch/exports";
+
 pub fn snapshot(epoch: Instant, tick: u64) -> Snapshot {
     let end = epoch + Duration::from_secs(tick);
     let mut rx = VecDeque::new();
@@ -137,6 +141,11 @@ pub fn snapshot(epoch: Instant, tick: u64) -> Snapshot {
         gateway: Some("192.0.2.1".into()),
         dns_servers: vec!["192.0.2.53".into()],
         default_route: Some("demo0".into()),
+        synthetic: true,
+        // Where exports would go, as the recorder shows it. Not the real
+        // cache directory, which can name the user; the preview exports
+        // nothing.
+        export_dir: Some(PREVIEW_EXPORTS.into()),
         ..Snapshot::empty()
     };
     snapshot.telemetry = Arc::new(crate::telemetry::Telemetry {
@@ -201,4 +210,23 @@ pub fn connections() -> Vec<netwatch::collectors::connections::Connection> {
             out_of_order: 0,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The preview names no real path: its export directory isn't this
+    /// machine's, and it says it's synthetic so screens don't read `/proc`.
+    #[test]
+    fn a_preview_names_no_path_of_this_machine() {
+        let s = snapshot(Instant::now(), 0);
+        assert!(s.synthetic && s.demo);
+        assert_eq!(
+            s.export_dir.as_deref(),
+            Some(std::path::Path::new(PREVIEW_EXPORTS))
+        );
+        assert_ne!(s.export_dir, crate::backend::export_dir());
+        assert!(!Snapshot::empty().synthetic);
+    }
 }
