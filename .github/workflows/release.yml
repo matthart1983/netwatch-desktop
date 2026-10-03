@@ -135,7 +135,11 @@ jobs:
           sha256sum -- *.tar.gz *.deb *.rpm | sort -k2 > SHA256SUMS
           cat SHA256SUMS
 
+      # Skipped while the repo is private, where it would fail and stop the
+      # release below, so a test tag such as v0.2.0-rc.1 can run end to end
+      # before the repo goes public.
       - uses: actions/attest-build-provenance@v4
+        if: ${{ !github.event.repository.private }}
         with:
           subject-path: |
             dist/*.tar.gz
