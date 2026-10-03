@@ -356,7 +356,9 @@ fn strip_option(group: &StripGroup, option: usize) -> String {
 /// Lays a control strip's options out in lines of at most `first_room`
 /// points (the first line, beside the keys) and then `room`. Each entry is
 /// (group, option), with `None` for the group's label, which always shares
-/// a line with its first option. The first line may be left to the keys.
+/// a line with its first option. A group that does not fit on the current
+/// line starts the next one when that holds all of it, and is split only
+/// when no line could. The first line may be left to the keys.
 fn strip_lines(
     ui: &Ui,
     groups: &[StripGroup],
@@ -380,6 +382,15 @@ fn strip_lines(
             } else {
                 units.push((vec![(g, Some(o))], chip));
             }
+        }
+        let whole = units.iter().map(|(_, width)| width).sum::<f32>()
+            + gap * units.len().saturating_sub(1) as f32;
+        let empty = lines.last().is_some_and(|line| line.is_empty());
+        let lead = if empty { 0.0 } else { 14.0 + gap };
+        let limit = if lines.len() == 1 { first_room } else { room };
+        if used + lead + whole > limit && whole <= room && !(empty && limit >= room) {
+            lines.push(Vec::new());
+            used = 0.0;
         }
         for (i, (entries, width)) in units.into_iter().enumerate() {
             let empty = lines.last().is_some_and(|line| line.is_empty());
@@ -1656,6 +1667,39 @@ mod fit_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_strip_splits_a_group_only_when_no_line_could_hold_it() {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let group = |label, options: &[&str]| StripGroup {
+            label,
+            options: options.iter().map(|o| (o.to_string(), None)).collect(),
+            active: 0,
+        };
+        let groups = [
+            group("show", &["concern 1", "all 3", "established 3", "listen 0"]),
+            group("group", &["none", "host", "process"]),
+            group("window", &["1m", "5m", "15m", "30m", "1h"]),
+        ];
+        let mut split = Vec::new();
+        texts(&ctx, 800.0, vec![], 0.0, |ui| {
+            for width in (200..=800).step_by(4).map(|w| w as f32) {
+                let lines = strip_lines(ui, &groups, width - 160.0, width);
+                for (g, group) in groups.iter().enumerate() {
+                    let on = lines
+                        .iter()
+                        .filter(|line| line.iter().any(|(i, _)| *i == g))
+                        .count();
+                    let alone = strip_lines(ui, std::slice::from_ref(group), width, width);
+                    if on > 1 && alone.len() == 1 {
+                        split.push(format!("{} at {width}: {lines:?}", group.label));
+                    }
+                }
+            }
+        });
+        assert!(split.is_empty(), "split though a line holds it: {split:#?}");
     }
 
     #[test]

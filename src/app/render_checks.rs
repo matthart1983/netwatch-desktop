@@ -576,6 +576,23 @@ fn connections_options_wrap_and_its_columns_scroll_sideways() {
             texts.iter().map(|t| &t.text).collect::<Vec<_>>()
         );
     }
+    // The group options move to the next line together with their label,
+    // not "group none" on one line and "host process" on the next.
+    let line_of = |text: &str| {
+        texts
+            .iter()
+            .find(|t| t.text == text)
+            .unwrap()
+            .rect
+            .center()
+            .y
+    };
+    for option in ["none", "host", "process"] {
+        assert!(
+            (line_of(option) - line_of("group")).abs() < 2.0,
+            "{option} is not on the group label's line"
+        );
+    }
     let screen = window.screen;
     let verdict = |out: &egui::FullOutput| {
         seen(out, screen)
