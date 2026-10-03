@@ -1750,73 +1750,82 @@ impl DesktopApp {
     /// The title-bar menu: graph look, fade, theme, view and the sheets. Every
     /// item is also a palette command or key; the menu just gathers them.
     fn view_menu(&mut self, ui: &mut Ui, nav: &mut Vec<Nav>) {
+        ui.menu_button(
+            ui_kit::mono("☰ menu", theme::LABEL, theme::text2()),
+            |ui| {
+                ui.set_min_width(250.0);
+                ui_kit::menu_body(ui, |ui| self.view_menu_rows(ui, nav));
+            },
+        );
+    }
+
+    fn view_menu_rows(&mut self, ui: &mut Ui, nav: &mut Vec<Nav>) {
         let look = theme::graphs();
-        ui.menu_button(ui_kit::mono("☰ menu", theme::LABEL, theme::text2()), |ui| {
-            ui.set_min_width(250.0);
-            if let Some(change) = zoom::menu(ui, self.zoom) {
-                nav.push(Nav::Zoom(change));
-            }
-            ui_kit::section(ui, "graphs");
-            let mut btop = look.btop;
-            if ui
-                .checkbox(&mut btop, "btop graphs (dot cells)")
-                .on_hover_text("Every chart in the app: btop braille-style dot cells, or solid bars. Saved as graph_style.")
-                .changed()
-            {
-                nav.push(Nav::ToggleBtop);
-            }
-            let mut fade = look.fade;
-            if ui
-                .checkbox(&mut fade, "magnitude fade")
-                .on_hover_text("Colour runs dim at the baseline to full at the top. Saved as graph_fade.")
-                .changed()
-            {
-                nav.push(Nav::ToggleFade);
-            }
-            ui_kit::section(ui, "theme");
-            ui.horizontal_wrapped(|ui| {
-                for palette in theme::palettes() {
-                    if ui
-                        .selectable_label(theme::current().name == palette.name, palette.name)
-                        .clicked()
-                    {
-                        nav.push(Nav::SetTheme(palette.name.into()));
-                    }
+        if let Some(change) = zoom::menu(ui, self.zoom) {
+            nav.push(Nav::Zoom(change));
+        }
+        ui_kit::section(ui, "graphs");
+        let mut btop = look.btop;
+        if ui
+            .checkbox(&mut btop, "btop graphs (dot cells)")
+            .on_hover_text("Every chart in the app: btop braille-style dot cells, or solid bars. Saved as graph_style.")
+            .changed()
+        {
+            nav.push(Nav::ToggleBtop);
+        }
+        let mut fade = look.fade;
+        if ui
+            .checkbox(&mut fade, "magnitude fade")
+            .on_hover_text(
+                "Colour runs dim at the baseline to full at the top. Saved as graph_fade.",
+            )
+            .changed()
+        {
+            nav.push(Nav::ToggleFade);
+        }
+        ui_kit::section(ui, "theme");
+        ui.horizontal_wrapped(|ui| {
+            for palette in theme::palettes() {
+                if ui
+                    .selectable_label(theme::current().name == palette.name, palette.name)
+                    .clicked()
+                {
+                    nav.push(Nav::SetTheme(palette.name.into()));
                 }
-            });
-            ui_kit::section(ui, "view");
-            ui.horizontal(|ui| {
-                for name in ["full", "lite", "dense"] {
-                    if ui
-                        .selectable_label(self.view.name() == name, name)
-                        .clicked()
-                    {
-                        nav.push(Nav::SetView(name));
-                    }
-                }
-            });
-            let mut dock = self.dock_visible();
-            if ui.checkbox(&mut dock, "timeline dock").changed() {
-                nav.push(Nav::ToggleDock);
-            }
-            let mut rail = self.prefs.nav_collapsed;
-            if ui.checkbox(&mut rail, "collapse navigator").changed() {
-                nav.push(Nav::ToggleNavigator);
-            }
-            let mut on_top = self.prefs.lite_on_top;
-            if ui.checkbox(&mut on_top, "lite window on top").changed() {
-                nav.push(Nav::ToggleLiteOnTop);
-            }
-            ui_kit::rule(ui);
-            if ui.button("settings  ,").clicked() {
-                nav.push(Nav::Key(Key::Char(',')));
-                ui.close_menu();
-            }
-            if ui.button("help  ?").clicked() {
-                nav.push(Nav::Key(Key::Char('?')));
-                ui.close_menu();
             }
         });
+        ui_kit::section(ui, "view");
+        ui.horizontal(|ui| {
+            for name in ["full", "lite", "dense"] {
+                if ui
+                    .selectable_label(self.view.name() == name, name)
+                    .clicked()
+                {
+                    nav.push(Nav::SetView(name));
+                }
+            }
+        });
+        let mut dock = self.dock_visible();
+        if ui.checkbox(&mut dock, "timeline dock").changed() {
+            nav.push(Nav::ToggleDock);
+        }
+        let mut rail = self.prefs.nav_collapsed;
+        if ui.checkbox(&mut rail, "collapse navigator").changed() {
+            nav.push(Nav::ToggleNavigator);
+        }
+        let mut on_top = self.prefs.lite_on_top;
+        if ui.checkbox(&mut on_top, "lite window on top").changed() {
+            nav.push(Nav::ToggleLiteOnTop);
+        }
+        ui_kit::rule(ui);
+        if ui.button("settings  ,").clicked() {
+            nav.push(Nav::Key(Key::Char(',')));
+            ui.close_menu();
+        }
+        if ui.button("help  ?").clicked() {
+            nav.push(Nav::Key(Key::Char('?')));
+            ui.close_menu();
+        }
     }
 
     /// The app's own window controls: three neutral dots.
@@ -3367,6 +3376,51 @@ mod tests {
         });
         assert!(!dock(&w.frame(&mut app, draw)));
         assert!(!app.prefs.show_dock && app.prefs_dirty);
+    }
+    #[test]
+    fn the_menu_scrolls_to_its_last_row_in_a_small_window() {
+        let s = crate::backend::tests::snapshot();
+        let draw =
+            |app: &mut DesktopApp, ctx: &egui::Context| app.draw_full(ctx, Some(&s), Some(&s));
+        // The full view's smallest window at 300%: 300×200 pt.
+        let mut app = app_with(Prefs::default());
+        let mut w = Window::new(vec2(900.0, 600.0));
+        w.frame(&mut app, |app, ctx| app.start(ctx));
+        w.frame(&mut app, |app, ctx| {
+            app.change_zoom(ctx, zoom::Change::To(3.0))
+        });
+        let out = w.frame(&mut app, draw);
+        let menu = texts_at(&out)
+            .into_iter()
+            .find(|(t, _)| t == "☰ menu")
+            .map(|(_, at)| at)
+            .unwrap();
+        let button = |pressed| egui::Event::PointerButton {
+            pos: menu,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        for events in [
+            vec![egui::Event::PointerMoved(menu)],
+            vec![button(true)],
+            vec![button(false)],
+            vec![egui::Event::PointerMoved(pos2(200.0, 120.0))],
+            vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: vec2(0.0, -2000.0),
+                modifiers: Default::default(),
+            }],
+        ] {
+            w.events = events;
+            w.frame(&mut app, draw);
+        }
+        let mut out = w.frame(&mut app, draw);
+        for _ in 0..30 {
+            out = w.frame(&mut app, draw);
+        }
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 200.0));
+        assert!(on_screen(&out, screen, "help  ?"), "{:?}", texts_at(&out));
     }
     #[test]
     fn theme_cycles_through_every_palette_and_back() {

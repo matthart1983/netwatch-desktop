@@ -184,15 +184,18 @@ impl Lite {
                             ui_kit::mono("☰ menu", theme::LABEL, theme::text2()),
                             |ui| {
                                 ui.set_min_width(220.0);
-                                if let Some(change) = crate::zoom::menu(ui, ui.ctx().zoom_factor())
-                                {
-                                    cx.go(Nav::Zoom(change));
-                                }
-                                ui_kit::rule(ui);
-                                if ui.button("full view  L").clicked() {
-                                    cx.go(Nav::SetView("full"));
-                                    ui.close_menu();
-                                }
+                                ui_kit::menu_body(ui, |ui| {
+                                    if let Some(change) =
+                                        crate::zoom::menu(ui, ui.ctx().zoom_factor())
+                                    {
+                                        cx.go(Nav::Zoom(change));
+                                    }
+                                    ui_kit::rule(ui);
+                                    if ui.button("full view  L").clicked() {
+                                        cx.go(Nav::SetView("full"));
+                                        ui.close_menu();
+                                    }
+                                });
                             },
                         )
                     });

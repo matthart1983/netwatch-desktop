@@ -505,7 +505,26 @@ impl Settings {
                     .as_ref()
                     .map(|p| tilde(&p.display().to_string()))
                     .unwrap_or_else(|| "config path unavailable".into());
-            ui.label(ui_kit::mono(path, theme::LABEL, theme::muted()));
+            // The path gives way (shortens) to the save state on the right.
+            let font = FontId::monospace(theme::LABEL);
+            let right_w = if changes > 0 {
+                ui_kit::text_width(ui, "unsaved · 00 changes", font.clone())
+                    + ui_kit::text_width(ui, "S save", font)
+                    + 16.0
+            } else {
+                ui_kit::text_width(ui, "no changes S save", font)
+            } + 14.0
+                + 4.0
+                + 3.0 * ui.spacing().item_spacing.x;
+            ui.allocate_ui(
+                vec2((ui.available_width() - right_w).max(0.0), 22.0),
+                |ui| {
+                    ui.add(
+                        egui::Label::new(ui_kit::mono(path, theme::LABEL, theme::muted()))
+                            .truncate(),
+                    )
+                },
+            );
             ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(14.0);
                 if changes > 0 {
@@ -538,13 +557,27 @@ impl Settings {
     }
 
     fn groups(&mut self, ui: &mut Ui, rect: Rect) {
+        ui.allocate_ui_at_rect(rect, |ui| {
+            ui.set_clip_rect(rect.intersect(ui.clip_rect()));
+            // Scrolls when the body is shorter than the list.
+            egui::ScrollArea::vertical()
+                .id_source("settings_groups")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    ui.add_space(8.0);
+                    self.group_rows(ui);
+                });
+        });
+    }
+
+    fn group_rows(&mut self, ui: &mut Ui) {
         let current = ROWS[self.selected].group;
-        let mut y = rect.top() + 8.0;
         for (g, name) in GROUPS.iter().enumerate() {
             let count = ROWS.iter().filter(|r| r.group == g).count();
-            let row =
-                Rect::from_min_size(pos2(rect.left() + 8.0, y), vec2(rect.width() - 16.0, 26.0));
-            let response = ui.interact(row, ui.id().with(("group", g)), Sense::click());
+            let (slot, response) =
+                ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
+            let row = slot.shrink2(vec2(8.0, 0.0));
             if g == current {
                 ui.painter().rect_filled(row, 3.0, theme::raised());
             }
@@ -582,7 +615,6 @@ impl Settings {
                     self.select(first);
                 }
             }
-            y += 28.0;
         }
     }
 
@@ -594,8 +626,11 @@ impl Settings {
         let mut clicked_row = None;
         let mut cycle_click = None;
         let width = ui.available_width();
-        let label_w = 196.0;
-        let value_w = ((width - label_w) * 0.3).clamp(150.0, 220.0);
+        // Narrow sheets (large text sizes) keep the value in view.
+        let label_w = 196.0_f32.min(width * 0.45);
+        let value_w = ((width - label_w) * 0.3)
+            .clamp(150.0, 220.0)
+            .min((width - label_w - 16.0).max(0.0));
         let note_w = 112.0;
         for (i, row) in ROWS.iter().enumerate() {
             let selected = i == self.selected;
@@ -762,13 +797,12 @@ impl Settings {
                     theme::muted(),
                 );
             }
-            if !note.is_empty() {
+            // A narrow row drops the note before it covers the value.
+            let note_x = rect.right() - note_w - 12.0;
+            if !note.is_empty() && note_x >= value_end + 8.0 {
                 ui_kit::paint_text(
                     ui,
-                    Rect::from_min_size(
-                        pos2(rect.right() - note_w - 12.0, top),
-                        vec2(note_w, 29.0),
-                    ),
+                    Rect::from_min_size(pos2(note_x, top), vec2(note_w, 29.0)),
                     note,
                     FontId::monospace(theme::LABEL),
                     theme::muted(),
@@ -971,10 +1005,11 @@ impl Sheet for Settings {
         // Body: groups column + rows. Leave room for capabilities + footer.
         let cells = capability_cells(cx.s).len().max(1);
         let caps_h = 30.0 + cells.div_ceil(3) as f32 * 22.0;
-        let footer_h = 40.0;
+        let footer_h = 44.0;
         let body_h = (ui.available_height() - caps_h - footer_h).clamp(160.0, 620.0);
         let (body, _) = ui.allocate_exact_size(vec2(ui.available_width(), body_h), Sense::hover());
-        let groups_w = 170.0;
+        // Narrow sheets (large text sizes) give the rows the room.
+        let groups_w = 170.0_f32.min(ui.available_width() * 0.3);
         let groups_rect = Rect::from_min_size(body.min, vec2(groups_w, body_h));
         ui.painter().vline(
             groups_rect.right(),

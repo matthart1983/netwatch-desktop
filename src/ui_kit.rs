@@ -1206,11 +1206,26 @@ pub fn time_axis(ui: &mut Ui, rect_x: egui::Rangef, labels: &[String]) {
     }
 }
 
+/// A ☰ menu's rows, scrolling when large text sizes make the menu taller
+/// than the window.
+pub fn menu_body<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let room = (ui.ctx().screen_rect().bottom() - ui.cursor().top() - 8.0).max(48.0);
+    // A menu offers last frame's size; asking for the room lets it grow
+    // when its rows do (a larger text size wraps them), and it shrinks
+    // back to the rows.
+    egui::ScrollArea::vertical()
+        .max_height(room)
+        .min_scrolled_height(room)
+        .show(ui, add)
+        .inner
+}
+
 // ---------------------------------------------------------------- sheets
 
 /// A sheet over the current screen: 62% scrim, panel ground, accent border,
-/// 8px radius, drop shadow. Returns the body's result and whether the scrim
-/// was clicked.
+/// 8px radius, drop shadow. It stays inside the window, scrolling its body
+/// when the window is too small for it. Returns the body's result and
+/// whether the scrim was clicked.
 pub fn sheet<R>(
     ctx: &egui::Context,
     id: &str,
@@ -1230,11 +1245,14 @@ pub fn sheet<R>(
             response.clicked()
         })
         .inner;
-    let width = width.min(screen.width() - 40.0);
+    // Large text sizes leave few points: the side margin, the gap above
+    // and the gap below shrink with the window so the sheet stays on it.
+    let width = width.min(screen.width() - 40.0_f32.min(screen.width() * 0.1));
     let pos = pos2(
         screen.center().x - width / 2.0,
-        top.unwrap_or(screen.top() + 60.0),
+        screen.top() + top.unwrap_or(60.0).min(screen.height() * 0.25),
     );
+    let bottom = 30.0_f32.min(screen.height() * 0.05);
     let inner = egui::Area::new(egui::Id::new(id))
         .order(egui::Order::Foreground)
         .fixed_pos(pos)
@@ -1250,9 +1268,16 @@ pub fn sheet<R>(
                     color: Color32::from_black_alpha(128),
                 })
                 .show(ui, |ui| {
+                    let height = (screen.bottom() - pos.y - bottom).max(0.0);
                     ui.set_width(width);
-                    ui.set_max_height(screen.height() - pos.y - 30.0);
-                    body(ui)
+                    ui.set_max_height(height);
+                    // A sheet whose own layout doesn't fit scrolls inside its
+                    // frame rather than running off the window.
+                    egui::ScrollArea::both()
+                        .id_source((id, "body"))
+                        .max_height(height)
+                        .show(ui, body)
+                        .inner
                 })
                 .inner
         })
