@@ -1227,8 +1227,10 @@ impl Screen for Egress {
         let active = cx.filter.cloned();
         let mut apply = None;
         for row in rows.iter().take(10) {
-            let drift = row.drift();
-            let (value, color) = if drift > 0 {
+            let (blocked, drift) = (row.blocked(), row.drift());
+            let (value, color) = if blocked > 0 {
+                (format!("{blocked} blocked"), theme::error())
+            } else if drift > 0 {
                 (format!("{drift} drift"), theme::violet())
             } else {
                 (row.dests.len().to_string(), theme::muted())

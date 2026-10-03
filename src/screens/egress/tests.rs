@@ -323,12 +323,39 @@ fn promotion_names_the_blocked_destinations_it_leaves_out() {
 #[test]
 fn tab_badge_and_navigator_show_the_block_list_state() {
     let mut s = Snapshot::empty();
-    let blocked = with_block();
+    let mut blocked = with_block();
     s.egress = blocked.data.clone().unwrap();
     assert_eq!(
         crate::screens::badge(Tab::Egress, &s),
         Some(("1 blocked".to_string(), theme::error()))
     );
+    // The navigator's process list leads with the block too: curl's only
+    // finding is blocked, and node still drifts.
+    let ctx = egui::Context::default();
+    crate::theme::install_fonts(&ctx);
+    let mut h = Harness::new();
+    let output = ctx.run(Default::default(), |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            blocked.navigator(ui, &mut h.cx(&s, None));
+        });
+    });
+    let colored: Vec<(String, egui::Color32)> = output
+        .shapes
+        .iter()
+        .filter_map(|c| match &c.shape {
+            egui::Shape::Text(t) => Some((
+                t.galley.text().to_string(),
+                t.galley.job.sections.first()?.format.color,
+            )),
+            _ => None,
+        })
+        .collect();
+    for want in [
+        ("1 blocked".to_string(), theme::error()),
+        ("1 drift".to_string(), theme::violet()),
+    ] {
+        assert!(colored.contains(&want), "{want:?} in {colored:?}");
+    }
     // Default alert mode and no block list.
     let mut plain = populated();
     s.egress = plain.data.clone().unwrap();
