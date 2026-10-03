@@ -1,6 +1,6 @@
 # netwatch desktop
 
-See which programs on this computer use the network, and what's wrong with it. Everything runs on this machine, and it uploads nothing unless you turn on online GeoIP lookups or AI insights.
+See which programs on this computer use the network, and what's wrong with it. Everything runs on this machine, and it uploads nothing unless you look up an address's whois record or turn on online GeoIP lookups or AI insights.
 
 ![The dashboard. All screenshots are drawn from synthetic data](docs/screenshots/dashboard.png)
 
@@ -202,7 +202,8 @@ Collection and analysis stay on this machine, but the health checks are real tra
 
 These only happen when you ask for them:
 
-- whois lookups with `W`, traceroutes with `T`, and the diagnose tests you run. Each test says what traffic it sends before you run it
+- whois lookups with `W`, which send the selected public address to rdap.org over HTTPS
+- traceroutes with `T`, and the diagnose tests you run. Each test says what traffic it sends before you run it
 - probes of the services you list under `[[diagnose_targets]]` in `config.toml`, described in [docs/DIAGNOSE.md](docs/DIAGNOSE.md)
 - online GeoIP lookups, which send remote addresses to ip-api.com. `geoip_online` is off by default
 - AI insights, which send a network summary to the endpoint you configure. `insights_enabled` is off by default
