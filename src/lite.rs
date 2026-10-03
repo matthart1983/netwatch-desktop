@@ -3,6 +3,7 @@
 //! reachability (gateway · dns · internet) and top talkers — and six keys.
 //! `/` filters the talkers inline, ↑↓ select one and ↵ opens its detail.
 use crate::backend::Snapshot;
+use crate::probe::ProbeState;
 use crate::shell::{Cx, Hint, Key, Nav, Tab};
 use crate::{connections, format, theme, ui_kit};
 use egui::{pos2, vec2, Align, FontId, Rect, Sense, Stroke, Ui};
@@ -350,15 +351,13 @@ impl Lite {
 
     fn reachability(&mut self, ui: &mut Ui, rect: Rect, s: &Snapshot) {
         let h = &s.health;
-        let rows: [(&str, Option<String>, Option<f64>, f64); 3] = [
+        let rows: [(&str, Option<String>); 3] = [
             (
                 "gateway",
                 h.completed
                     .gateway_target
                     .clone()
                     .or_else(|| s.gateway.clone()),
-                h.gateway_rtt_ms,
-                h.gateway_loss.pct().unwrap_or(0.0),
             ),
             (
                 "dns",
@@ -366,21 +365,21 @@ impl Lite {
                     .dns_target
                     .clone()
                     .or_else(|| s.dns_servers.first().cloned()),
-                h.dns_rtt_ms,
-                h.dns_loss.pct().unwrap_or(0.0),
             ),
             (
                 "internet",
                 Some(netwatch::collectors::health::INTERNET_TARGET.to_string()),
-                h.internet_rtt_ms,
-                h.internet_loss.pct().unwrap_or(0.0),
             ),
         ];
         ui.push_id("lite_reach", |ui| {
             ui_kit::panel_in(ui, rect, ui_kit::PanelHead::new("reachability"), |ui| {
-                for (name, ip, rtt, loss) in rows {
-                    let (row, _) =
+                for (name, ip) in rows {
+                    let probe = s.probe(name);
+                    let (row, response) =
                         ui.allocate_exact_size(vec2(ui.available_width(), 19.0), Sense::hover());
+                    if let Some(note) = probe.state.note() {
+                        response.on_hover_text(note);
+                    }
                     let status = s.health_color(name);
                     // Measured and fine reads good; stale stays muted.
                     let color = if status == theme::text() {
@@ -402,13 +401,14 @@ impl Lite {
                         theme::text(),
                         Align::Min,
                     );
-                    let rtt_text = match rtt {
-                        Some(v) if loss > 0.0 => {
+                    let rtt_text = match (probe.rtt, probe.state) {
+                        (Some(v), ProbeState::Lossy(loss)) => {
                             format!("{} · {:.0}% loss", format::rtt_ms(Some(v)), loss)
                         }
-                        Some(v) => format::rtt_ms(Some(v)),
-                        None if status == theme::muted() => "waiting".into(),
-                        None => "no reply".into(),
+                        (Some(v), _) => format::rtt_ms(Some(v)),
+                        (None, ProbeState::Unmeasured(_)) => "unmeasured".into(),
+                        (None, ProbeState::NoReply) => "no reply".into(),
+                        (None, _) => "waiting".into(),
                     };
                     let rtt_w =
                         ui_kit::paint_text(ui, row, &rtt_text, font.clone(), color, Align::Max);
@@ -862,6 +862,19 @@ mod tests {
 
         assert!(texts.iter().any(|t| t == "1.1 MB/s"));
         assert!(texts.iter().any(|t| t == "ddiagnose"));
+    }
+
+    #[test]
+    fn reachability_says_unmeasured_not_no_reply() {
+        let mut s = Snapshot::empty();
+        let h = Arc::make_mut(&mut s.health);
+        h.completed.gateway = Some(s.observed_at);
+        h.gateway_loss = netwatch::collectors::health::Loss::Unmeasured("icmp blocked");
+        h.completed.dns = Some(s.observed_at);
+        h.dns_loss = netwatch::collectors::health::Loss::Measured(100.0);
+        let texts = render(&mut Lite::default(), &s, &mut H::new());
+        assert_eq!(texts.iter().filter(|t| *t == "unmeasured").count(), 1);
+        assert_eq!(texts.iter().filter(|t| *t == "no reply").count(), 1);
     }
 
     #[test]

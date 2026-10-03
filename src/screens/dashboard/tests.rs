@@ -1,6 +1,7 @@
 use super::*;
 use crate::screens::connections::tests::{fixture, issue, render, with_cx};
 use crate::shell::Shared;
+use netwatch::collectors::health::Loss;
 use netwatch::diagnose::issue::{Evidence, Subject};
 use std::sync::Arc;
 
@@ -45,7 +46,13 @@ fn waiting_stale_failed_and_nominal_stay_distinct() {
     let h = Arc::make_mut(&mut s.health);
     h.completed.gateway = Some(s.observed_at);
     h.gateway_rtt_ms = None;
+    h.gateway_loss = Loss::Unmeasured("icmp is blocked here and the gateway answers no tcp port");
+    assert_eq!(rtt_cards(&s)[0].status, vec!["unmeasured".to_string()]);
+    assert_eq!(rtt_cards(&s)[0].status_color, theme::muted());
+    let h = Arc::make_mut(&mut s.health);
+    h.gateway_loss = Loss::Measured(100.0);
     assert_eq!(rtt_cards(&s)[0].status, vec!["failed".to_string()]);
+    assert_eq!(rtt_cards(&s)[0].status_color, theme::error());
     let h = Arc::make_mut(&mut s.health);
     h.completed.gateway = Some(s.observed_at - Duration::from_secs(40));
     assert_eq!(rtt_cards(&s)[0].status, vec!["stale".to_string()]);
@@ -56,10 +63,34 @@ fn waiting_stale_failed_and_nominal_stay_distinct() {
 }
 
 #[test]
+fn loss_card_has_no_figure_for_an_unmeasured_probe_and_says_why() {
+    let mut s = Snapshot::empty();
+    let h = Arc::make_mut(&mut s.health);
+    h.completed.gateway = Some(s.observed_at);
+    h.gateway_loss = Loss::Unmeasured("icmp is blocked here and the gateway answers no tcp port");
+    let card = loss_card(&s);
+    assert_eq!(card.status, vec!["unmeasured".to_string()]);
+    assert_eq!(card.value, "–");
+    assert_eq!(card.status_color, theme::muted());
+    assert_eq!(
+        card.baseline,
+        "unmeasured: icmp is blocked here and the gateway answers no tcp port"
+    );
+    // A measurement elsewhere takes over; the unmeasured probe adds nothing.
+    let h = Arc::make_mut(&mut s.health);
+    h.completed.dns = Some(s.observed_at);
+    h.dns_rtt_ms = Some(2.0);
+    h.dns_loss = Loss::Measured(0.0);
+    let card = loss_card(&s);
+    assert_eq!(card.status, vec!["nominal".to_string()]);
+    assert_eq!(card.value, "0.0");
+}
+
+#[test]
 fn loss_card_takes_the_worst_fresh_probe_and_marks_lost_samples() {
     let mut s = fixture();
     let h = Arc::make_mut(&mut s.health);
-    h.dns_loss = netwatch::collectors::health::Loss::Measured(20.0);
+    h.dns_loss = Loss::Measured(20.0);
     h.dns_rtt_history.push_back(None);
     let card = loss_card(&s);
     assert_eq!(card.value, "20.0");

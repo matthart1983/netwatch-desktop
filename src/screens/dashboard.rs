@@ -63,7 +63,7 @@ fn issue_for<'a>(s: &'a Snapshot, prefix: &str) -> Option<&'a Issue> {
 }
 
 /// Status word forms for a probe target: the issue's deviation, or
-/// waiting / stale / failed / nominal.
+/// waiting / stale / unmeasured / failed / nominal.
 fn probe_status(s: &Snapshot, target: &str, prefix: &str) -> (Vec<String>, Color32) {
     if let Some(issue) = issue_for(s, prefix) {
         let since = short_time(&issue.since).to_string();
@@ -87,19 +87,7 @@ fn probe_status(s: &Snapshot, target: &str, prefix: &str) -> (Vec<String>, Color
             ),
         };
     }
-    let (at, rtt) = match target {
-        "gateway" => (s.health.completed.gateway, s.health.gateway_rtt_ms),
-        "dns" => (s.health.completed.dns, s.health.dns_rtt_ms),
-        _ => (s.health.completed.internet, s.health.internet_rtt_ms),
-    };
-    let word = match at {
-        None => "waiting",
-        Some(at) if s.observed_at.saturating_duration_since(at) > Duration::from_secs(30) => {
-            "stale"
-        }
-        Some(_) if rtt.is_none() => "failed",
-        Some(_) => "nominal",
-    };
+    let word = s.probe(target).state.word("nominal");
     let color = match word {
         "failed" => theme::error(),
         "nominal" => theme::good(),
@@ -228,26 +216,14 @@ pub fn rtt_cards(s: &Snapshot) -> [Card; 3] {
 
 pub fn loss_card(s: &Snapshot) -> Card {
     let h = &s.health;
-    let fresh = |at: Option<Instant>| {
-        at.is_some_and(|at| s.observed_at.saturating_duration_since(at) <= Duration::from_secs(30))
-    };
-    let measured = [
-        (
-            "gateway",
-            h.completed.gateway,
-            h.gateway_loss.pct().unwrap_or(0.0),
-        ),
-        ("dns", h.completed.dns, h.dns_loss.pct().unwrap_or(0.0)),
-        (
-            "internet",
-            h.completed.internet,
-            h.internet_loss.pct().unwrap_or(0.0),
-        ),
-    ];
-    let worst = measured
-        .iter()
-        .filter(|(_, at, _)| fresh(*at))
-        .max_by(|a, b| a.2.total_cmp(&b.2));
+    let probes = ["gateway", "dns", "internet"].map(|name| (name, s.probe(name)));
+    let fresh = || probes.iter().filter(|(_, p)| p.state.is_fresh());
+    // Only a measurement has a figure. A probe that could not be sent has
+    // none, and says why, rather than reading as 0% or 100%.
+    let worst = fresh()
+        .filter_map(|(name, p)| p.loss.pct().map(|pct| (*name, pct)))
+        .max_by(|a, b| a.1.total_cmp(&b.1));
+    let unmeasured = fresh().find_map(|(_, p)| p.state.note());
     let histories = [
         &h.gateway_rtt_history,
         &h.dns_rtt_history,
@@ -267,12 +243,17 @@ pub fn loss_card(s: &Snapshot) -> Card {
         })
         .collect();
     let (status, status_color, value_color) = match worst {
+        None if unmeasured.is_some() => (
+            vec!["unmeasured".to_string()],
+            theme::muted(),
+            theme::muted(),
+        ),
         None => (vec!["waiting".to_string()], theme::muted(), theme::muted()),
-        Some((_, _, loss)) if *loss <= 0.0 => {
+        Some((_, loss)) if loss <= 0.0 => {
             (vec!["nominal".to_string()], theme::good(), theme::text())
         }
-        Some((name, _, loss)) => {
-            let color = if *loss >= 50.0 {
+        Some((name, loss)) => {
+            let color = if loss >= 50.0 {
                 theme::error()
             } else {
                 theme::warn()
@@ -285,17 +266,20 @@ pub fn loss_card(s: &Snapshot) -> Card {
         status,
         status_color,
         value: worst
-            .map(|w| format!("{:.1}", w.2))
+            .map(|w| format!("{:.1}", w.1))
             .unwrap_or_else(|| "–".into()),
         unit: "%",
         value_color,
         bars,
-        bar_color: if worst.is_some_and(|w| w.2 > 0.0) {
+        bar_color: if worst.is_some_and(|w| w.1 > 0.0) {
             status_color
         } else {
             theme::good()
         },
-        baseline: "probe loss · gateway · dns · internet".into(),
+        baseline: match (worst, unmeasured) {
+            (None, Some(note)) => note,
+            _ => "probe loss · gateway · dns · internet".into(),
+        },
     }
 }
 

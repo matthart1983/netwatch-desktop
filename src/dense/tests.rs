@@ -265,6 +265,30 @@ fn stale_probe_values_are_marked_stale_and_budget_is_not_filled() {
 }
 
 #[test]
+fn an_unmeasured_probe_has_no_loss_figure_and_is_not_failed() {
+    let mut s = crate::preview::snapshot(Instant::now(), 0);
+    let health = std::sync::Arc::make_mut(&mut s.health);
+    health.completed.gateway = Some(s.observed_at);
+    health.gateway_rtt_ms = None;
+    health.gateway_loss = netwatch::collectors::health::Loss::Unmeasured("icmp blocked");
+    let mut h = Harness::new();
+    h.dense.zoom = Some(Panel::Health);
+    h.render(&s, egui::vec2(1280.0, 760.0), vec![]);
+    let output = h.render(&s, egui::vec2(1280.0, 760.0), vec![]);
+    text_point(&output, "unmeasured");
+    let texts: Vec<&str> = output
+        .shapes
+        .iter()
+        .filter_map(|c| match &c.shape {
+            egui::Shape::Text(t) => Some(t.galley.text()),
+            _ => None,
+        })
+        .collect();
+    assert!(!texts.contains(&"failed"), "{texts:?}");
+    assert_eq!(s.health_color("gateway"), theme::muted());
+}
+
+#[test]
 fn optional_columns_drop_by_priority_until_graph_fits() {
     let widths = [100.0, 80.0, 60.0, 40.0];
     let mut visible = [true; 4];

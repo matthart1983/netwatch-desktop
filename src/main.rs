@@ -9,6 +9,7 @@ mod graphs;
 mod lite;
 mod prefs;
 mod preview;
+mod probe;
 mod screens;
 mod sheets;
 mod shell;

@@ -279,30 +279,19 @@ impl Snapshot {
         }
     }
 
+    /// The latest result of the gateway, dns or internet probe.
+    pub fn probe(&self, target: &str) -> crate::probe::Probe {
+        crate::probe::Probe::of(&self.health, target, self.observed_at)
+    }
+
     pub fn health_color(&self, target: &str) -> egui::Color32 {
-        let (at, rtt, loss, prefix) = match target {
-            "gateway" => (
-                self.health.completed.gateway,
-                self.health.gateway_rtt_ms,
-                self.health.gateway_loss.pct().unwrap_or(0.0),
-                "gateway.",
-            ),
-            "dns" => (
-                self.health.completed.dns,
-                self.health.dns_rtt_ms,
-                self.health.dns_loss.pct().unwrap_or(0.0),
-                "dns.",
-            ),
-            _ => (
-                self.health.completed.internet,
-                self.health.internet_rtt_ms,
-                self.health.internet_loss.pct().unwrap_or(0.0),
-                "path.",
-            ),
+        let prefix = match target {
+            "gateway" => "gateway.",
+            "dns" => "dns.",
+            _ => "path.",
         };
-        if !at.is_some_and(|at| {
-            self.observed_at.saturating_duration_since(at) <= std::time::Duration::from_secs(30)
-        }) {
+        let state = self.probe(target).state;
+        if !state.is_fresh() {
             return crate::theme::muted();
         }
         if let Some(severity) = self
@@ -314,13 +303,7 @@ impl Snapshot {
         {
             return crate::theme::issue_color(Some(severity));
         }
-        if rtt.is_none() || loss >= 50.0 {
-            crate::theme::error()
-        } else if loss > 0.0 {
-            crate::theme::warn()
-        } else {
-            crate::theme::text()
-        }
+        state.color()
     }
 
     fn from_app(app: &App) -> Self {
@@ -1077,6 +1060,26 @@ pub(crate) mod tests {
         let h = Arc::make_mut(&mut s.health);
         h.completed.dns = Some(Instant::now() - Duration::from_secs(31));
         assert_eq!(s.health_color("dns"), crate::theme::muted());
+    }
+    #[test]
+    fn a_probe_that_could_not_be_sent_is_not_a_dead_link() {
+        // netwatch 0.35 reports a probe it could not send as unmeasured with
+        // no rtt. That says nothing about the target, so it stays muted.
+        let mut s = snapshot();
+        let h = Arc::make_mut(&mut s.health);
+        h.completed.gateway = Some(s.observed_at);
+        h.gateway_rtt_ms = None;
+        h.gateway_loss = netwatch::collectors::health::Loss::Unmeasured(
+            "icmp is blocked here and the gateway answers no tcp port",
+        );
+        assert_eq!(s.health_color("gateway"), crate::theme::muted());
+        let h = Arc::make_mut(&mut s.health);
+        h.gateway_loss = netwatch::collectors::health::Loss::Measured(100.0);
+        assert_eq!(s.health_color("gateway"), crate::theme::error());
+        let h = Arc::make_mut(&mut s.health);
+        h.gateway_rtt_ms = Some(3.0);
+        h.gateway_loss = netwatch::collectors::health::Loss::Measured(20.0);
+        assert_eq!(s.health_color("gateway"), crate::theme::warn());
     }
     #[test]
     fn successful_probe_alone_does_not_claim_healthy_latency() {
