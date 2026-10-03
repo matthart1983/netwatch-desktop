@@ -86,6 +86,7 @@ pub fn verdict_pill(v: &Verdict) -> (&'static str, Option<Color32>) {
         Verdict::Ip => ("ip", Some(theme::good())),
         Verdict::Asn(_) => ("asn", Some(theme::good())),
         Verdict::Ech => ("ech", Some(theme::info())),
+        Verdict::Blocked(_) => ("blocked", Some(theme::error())),
         Verdict::Drift => ("drift", Some(theme::violet())),
         Verdict::NoRule => ("no rule", None),
         Verdict::Undeclared => ("undeclared", Some(theme::warn())),
@@ -493,6 +494,7 @@ pub fn policy_diff(
         } else {
             union(old.map_or(&[][..], |r| &r.allow_ports), &new.allow_ports)
         },
+        ..Default::default()
     };
     if old
         .is_some_and(|r| r.allow_sni.is_empty() && r.allow_asn.is_empty() && r.allow_ip.is_empty())
@@ -735,6 +737,7 @@ mod tests {
         e.policy = Some(netwatch::collectors::egress::EgressPolicy {
             strict: false,
             process: [("node".to_string(), ProcessRule::default())].into(),
+            ..Default::default()
         });
         let rows = build(&e, &Scope::default());
         assert_eq!(rows[0].summary.0, "ruled · 1 · 1 drift");

@@ -232,9 +232,17 @@ pub fn loss_card(s: &Snapshot) -> Card {
         at.is_some_and(|at| s.observed_at.saturating_duration_since(at) <= Duration::from_secs(30))
     };
     let measured = [
-        ("gateway", h.completed.gateway, h.gateway_loss_pct),
-        ("dns", h.completed.dns, h.dns_loss_pct),
-        ("internet", h.completed.internet, h.internet_loss_pct),
+        (
+            "gateway",
+            h.completed.gateway,
+            h.gateway_loss.pct().unwrap_or(0.0),
+        ),
+        ("dns", h.completed.dns, h.dns_loss.pct().unwrap_or(0.0)),
+        (
+            "internet",
+            h.completed.internet,
+            h.internet_loss.pct().unwrap_or(0.0),
+        ),
     ];
     let worst = measured
         .iter()

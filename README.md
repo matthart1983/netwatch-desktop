@@ -37,15 +37,12 @@ It is not a remote dashboard. There is no server and no second engine. The app l
 
 ## Building
 
-For **v0.1.1**, use the matching `netwatch-desktop-v0.1.1-source.tar.gz` asset from [Releases](https://github.com/matthart1983/netwatch-desktop/releases/tag/v0.1.1). It includes both repositories' source in the required layout, including the netwatch changes this desktop build needs. Extract it, enter `netwatch-desktop`, and run `cargo build --release --locked`.
-
-For development, the app depends on the netwatch crate by path. Check both repositories out side by side, using a netwatch revision with the Diagnose APIs required by this checkout:
+The netwatch library comes from crates.io as `netwatch-tui`, pinned to an exact version (0.35.1). You don't need a netwatch checkout.
 
 ```sh
-git clone https://github.com/matthart1983/netwatch
 git clone https://github.com/matthart1983/netwatch-desktop
 cd netwatch-desktop
-cargo build --release
+cargo build --release --locked
 ```
 
 You need a recent stable Rust toolchain and the same system libraries netwatch needs, plus what eframe needs to open a window.
@@ -65,6 +62,14 @@ sudo apt install libpcap-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev
 On macOS, the Xcode command line tools are enough.
 
 This build turns off netwatch's eBPF attribution (`default-features = false`), so there is no kernel-capability dependency beyond packet capture.
+
+To build against a local netwatch checkout instead, override the dependency for one command rather than editing `Cargo.toml`:
+
+```sh
+cargo build --config 'patch.crates-io.netwatch-tui.path="../netwatch"'
+```
+
+The checkout's version has to match the pin, or cargo warns that the patch was not used and builds the crates.io release. The override also rewrites `Cargo.lock`, so leave that change out of commits (`git checkout Cargo.lock`).
 
 ## Running
 
@@ -290,7 +295,6 @@ Design decisions and the reasoning behind them are in [docs/DESIGN-NOTES.md](doc
 - Timeline retransmission and recorder history start when the app starts.
 - Right-click selects but doesn't open an actions menu, and table columns can't be reordered or resized.
 - App-drawn window chrome is opt-in until edge resizing is checked on more compositors.
-- The path dependency on `../netwatch` means a fresh clone only builds next to a netwatch checkout.
 
 ## License
 

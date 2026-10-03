@@ -428,7 +428,7 @@ impl Dense {
                     .as_deref()
                     .unwrap_or("not configured"),
                 h.gateway_rtt_ms,
-                h.gateway_loss_pct,
+                h.gateway_loss.pct().unwrap_or(0.0),
                 h.completed.gateway,
             ),
             (
@@ -438,14 +438,14 @@ impl Dense {
                     .as_deref()
                     .unwrap_or("not configured"),
                 h.dns_rtt_ms,
-                h.dns_loss_pct,
+                h.dns_loss.pct().unwrap_or(0.0),
                 h.completed.dns,
             ),
             (
                 "Internet",
                 "internet",
                 h.internet_rtt_ms,
-                h.internet_loss_pct,
+                h.internet_loss.pct().unwrap_or(0.0),
                 h.completed.internet,
             ),
         ];

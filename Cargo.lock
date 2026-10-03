@@ -288,7 +288,7 @@ dependencies = [
  "polling 2.8.0",
  "rustix 0.37.28",
  "slab",
- "socket2",
+ "socket2 0.4.10",
  "waker-fn",
 ]
 
@@ -2375,7 +2375,9 @@ dependencies = [
 
 [[package]]
 name = "netwatch-tui"
-version = "0.31.2"
+version = "0.35.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb86f9e0ca9ab813ec05136cc1af3962cfbd510414a5a09061de1d1b839cc6f0"
 dependencies = [
  "anyhow",
  "brotli",
@@ -2396,6 +2398,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "socket2 0.6.5",
  "tls-parser",
  "tokio",
  "toml",
@@ -2405,6 +2408,7 @@ dependencies = [
  "tracing-subscriber",
  "unicode-width",
  "ureq",
+ "url",
  "uuid",
  "webpki-roots 0.26.11",
 ]
@@ -3598,6 +3602,16 @@ checksum = "9f7916fc008ca5542385b89a3d3ce689953c143e9304a9bf8beec1de48994c0d"
 dependencies = [
  "libc",
  "winapi",
+]
+
+[[package]]
+name = "socket2"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

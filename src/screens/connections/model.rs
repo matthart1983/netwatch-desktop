@@ -779,6 +779,7 @@ pub fn attribution_label(s: &Snapshot) -> String {
         A::Procfs => "procfs",
         A::Pktap => "pktap",
         A::Ebpf => "ebpf",
+        A::Sockstat => "sockstat",
     };
     let attributed = s.connections.iter().any(|c| c.pid.is_some());
     let fresh = s

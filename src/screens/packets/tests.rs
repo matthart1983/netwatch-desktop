@@ -383,12 +383,14 @@ fn s_follows_the_stream_conversation() {
     {
         let mut tracker = s.packets.streams.lock().unwrap();
         let stream = tracker.all_streams.get_mut(&7).unwrap();
-        let seg = |id: u64, direction, payload: &[u8], decrypted: Option<&[u8]>| StreamSegment {
-            packet_id: id,
-            timestamp: String::new(),
-            direction,
-            payload: payload.to_vec(),
-            decrypted: decrypted.map(<[u8]>::to_vec),
+        let seg = |id: u64, direction, payload: &[u8], decrypted: Option<&[u8]>| {
+            std::sync::Arc::new(StreamSegment {
+                packet_id: id,
+                timestamp: String::new(),
+                direction,
+                payload: payload.to_vec(),
+                decrypted: decrypted.map(<[u8]>::to_vec),
+            })
         };
         // The key orders endpoints lexically, so the server 10.88.0.3 is key
         // a and the client's segments run b → a.
@@ -608,6 +610,7 @@ fn peer_rows_and_ja4_names() {
         "t12d160700_8cdfa2d4673b_18dd7303c4a5 (GoLang)"
     );
     let bodies = vec![netwatch::dpi::http3::DecodedBody {
+        truncated: false,
         encoding: netwatch::dpi::http3::BodyEncoding::Gzip,
         stream_id: 4,
         bytes: b"{\"ok\":true}".to_vec(),

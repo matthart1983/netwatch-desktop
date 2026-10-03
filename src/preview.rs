@@ -42,9 +42,9 @@ pub fn snapshot(epoch: Instant, tick: u64) -> Snapshot {
         health.completed.dns_history.push_back(at);
         health.completed.internet_history.push_back(at);
     }
-    health.gateway_loss_pct = 0.0;
-    health.dns_loss_pct = 0.0;
-    health.internet_loss_pct = 0.0;
+    health.gateway_loss = netwatch::collectors::health::Loss::Measured(0.0);
+    health.dns_loss = netwatch::collectors::health::Loss::Measured(0.0);
+    health.internet_loss = netwatch::collectors::health::Loss::Measured(0.0);
     health.gateway_rtt_ms = health.gateway_rtt_history.back().copied().flatten();
     health.dns_rtt_ms = health.dns_rtt_history.back().copied().flatten();
     health.internet_rtt_ms = health.internet_rtt_history.back().copied().flatten();

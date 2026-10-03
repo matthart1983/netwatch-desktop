@@ -206,6 +206,7 @@ pub fn snapshot() -> EgressSnapshot {
                     allow_asn: vec!["AS36459 · github".into()],
                     allow_ip: vec!["10.88.0.3".into()],
                     allow_ports: vec![80, 443],
+                    ..Default::default()
                 },
             ),
             (
@@ -218,6 +219,7 @@ pub fn snapshot() -> EgressSnapshot {
             ),
         ]
         .into(),
+        ..Default::default()
     });
     e.recent.push(RecentViolation {
         process: "node".into(),

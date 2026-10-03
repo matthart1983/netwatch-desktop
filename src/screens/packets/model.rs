@@ -1156,15 +1156,15 @@ pub mod tests {
             (1, netwatch::collectors::packets::StreamDirection::AtoB),
             (2, netwatch::collectors::packets::StreamDirection::BtoA),
         ] {
-            stream
-                .segments
-                .push(netwatch::collectors::packets::StreamSegment {
+            stream.segments.push(std::sync::Arc::new(
+                netwatch::collectors::packets::StreamSegment {
                     packet_id: id,
                     timestamp: String::new(),
                     direction: dir,
                     payload: big.clone(),
                     decrypted: None,
-                });
+                },
+            ));
         }
         // Key a is the server here, so a → b is server → client.
         let conv = conversation(&stream, false);

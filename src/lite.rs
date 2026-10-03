@@ -358,7 +358,7 @@ impl Lite {
                     .clone()
                     .or_else(|| s.gateway.clone()),
                 h.gateway_rtt_ms,
-                h.gateway_loss_pct,
+                h.gateway_loss.pct().unwrap_or(0.0),
             ),
             (
                 "dns",
@@ -367,13 +367,13 @@ impl Lite {
                     .clone()
                     .or_else(|| s.dns_servers.first().cloned()),
                 h.dns_rtt_ms,
-                h.dns_loss_pct,
+                h.dns_loss.pct().unwrap_or(0.0),
             ),
             (
                 "internet",
                 Some(netwatch::collectors::health::INTERNET_TARGET.to_string()),
                 h.internet_rtt_ms,
-                h.internet_loss_pct,
+                h.internet_loss.pct().unwrap_or(0.0),
             ),
         ];
         ui.push_id("lite_reach", |ui| {

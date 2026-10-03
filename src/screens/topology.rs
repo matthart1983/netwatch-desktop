@@ -1158,6 +1158,7 @@ mod tests {
             },
         };
         TracerouteResult {
+            reached: None,
             completed: Some(Instant::now()),
             completed_at: at.into(),
             target: "1.1.1.1".into(),

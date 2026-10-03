@@ -247,6 +247,7 @@ impl Snapshot {
             rtt_history: Default::default(),
             attribution: Default::default(),
             traceroute: Arc::new(TracerouteResult {
+                reached: None,
                 completed: None,
                 completed_at: String::new(),
                 target: String::new(),
@@ -283,19 +284,19 @@ impl Snapshot {
             "gateway" => (
                 self.health.completed.gateway,
                 self.health.gateway_rtt_ms,
-                self.health.gateway_loss_pct,
+                self.health.gateway_loss.pct().unwrap_or(0.0),
                 "gateway.",
             ),
             "dns" => (
                 self.health.completed.dns,
                 self.health.dns_rtt_ms,
-                self.health.dns_loss_pct,
+                self.health.dns_loss.pct().unwrap_or(0.0),
                 "dns.",
             ),
             _ => (
                 self.health.completed.internet,
                 self.health.internet_rtt_ms,
-                self.health.internet_loss_pct,
+                self.health.internet_loss.pct().unwrap_or(0.0),
                 "path.",
             ),
         };
@@ -477,7 +478,7 @@ impl Snapshot {
                         .map(|v| ((c.local_addr.clone(), c.remote_addr.clone()), v))
                 })
                 .collect(),
-            events: netwatch::app::build_diagnose_report(app).timeline,
+            events: netwatch::diagnose::controller::build_diagnose_report(app).timeline,
             recorder: app.incident_recorder.state(),
             interfaces: app.traffic.interfaces(),
             connections: app.connection_collector.connections(),
@@ -778,10 +779,8 @@ fn app_status(app: &App) -> Option<String> {
 }
 
 fn reload_policy(app: &mut App, path: &std::path::Path) -> bool {
-    let policy = netwatch::collectors::egress::load_policy_file(path);
-    let loaded = policy.is_some();
-    app.egress_profiler.set_policy(policy);
-    loaded
+    app.egress_profiler.reload_policy(path);
+    app.egress_profiler.has_policy()
 }
 
 fn run_command(app: &mut App, command: Command) -> Result<String, String> {
@@ -808,7 +807,7 @@ fn run_command(app: &mut App, command: Command) -> Result<String, String> {
             .map(|_| "flight recorder frozen · manual freeze".to_string())
             .map_err(|e| format!("✕ freeze failed · {e}")),
         Command::ExportReport => {
-            netwatch::app::export_diagnose_report(app);
+            netwatch::diagnose::controller::export_diagnose_report(app);
             let status = app.diagnose.status.clone().unwrap_or_default();
             app.ui.export_status = Some(status.clone());
             if status.to_lowercase().contains("fail") {
@@ -1073,7 +1072,7 @@ pub(crate) mod tests {
         let h = Arc::make_mut(&mut s.health);
         h.completed.dns = Some(Instant::now());
         h.dns_rtt_ms = None;
-        h.dns_loss_pct = 100.0;
+        h.dns_loss = netwatch::collectors::health::Loss::Measured(100.0);
         assert_eq!(s.health_color("dns"), crate::theme::error());
         let h = Arc::make_mut(&mut s.health);
         h.completed.dns = Some(Instant::now() - Duration::from_secs(31));
@@ -1085,7 +1084,7 @@ pub(crate) mod tests {
         let h = Arc::make_mut(&mut s.health);
         h.completed.dns = Some(Instant::now());
         h.dns_rtt_ms = Some(2000.0);
-        h.dns_loss_pct = 0.0;
+        h.dns_loss = netwatch::collectors::health::Loss::Measured(0.0);
         assert_eq!(s.health_color("dns"), crate::theme::text());
     }
     #[test]

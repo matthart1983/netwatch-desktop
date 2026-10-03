@@ -59,7 +59,7 @@ fn waiting_stale_failed_and_nominal_stay_distinct() {
 fn loss_card_takes_the_worst_fresh_probe_and_marks_lost_samples() {
     let mut s = fixture();
     let h = Arc::make_mut(&mut s.health);
-    h.dns_loss_pct = 20.0;
+    h.dns_loss = netwatch::collectors::health::Loss::Measured(20.0);
     h.dns_rtt_history.push_back(None);
     let card = loss_card(&s);
     assert_eq!(card.value, "20.0");

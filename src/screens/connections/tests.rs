@@ -35,6 +35,7 @@ pub(crate) fn conn(
 pub(crate) fn issue(rule: &str, subject: Subject) -> Issue {
     let r = netwatch::diagnose::rules::lookup(rule).unwrap();
     Issue {
+        stale_since: None,
         id: "2026-0903-01".into(),
         rule: rule.into(),
         severity: r.severity,
