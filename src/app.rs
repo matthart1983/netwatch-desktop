@@ -563,9 +563,16 @@ impl DesktopApp {
                 self.backend = Backend::spawn_session(self.demo, Some(Mode::Disabled));
             }
             Key::Char('S') if failed => {
-                let mut config = netwatch::config::NetwatchConfig::load();
-                config.sandbox = "on".into();
-                match config.save() {
+                use netwatch::config::NetwatchConfig;
+                let old = NetwatchConfig::load();
+                let config = NetwatchConfig {
+                    sandbox: "on".into(),
+                    ..old.clone()
+                };
+                let saved = NetwatchConfig::path()
+                    .ok_or_else(|| "cannot determine config directory".to_string())
+                    .and_then(|path| crate::config_file::save(&path, &old, &config));
+                match saved {
                     Ok(()) => {
                         self.backend = Backend::spawn_session(self.demo, None);
                         self.toast = Some(Toast::ok("✓ sandbox = \"on\" saved"));

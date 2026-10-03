@@ -1063,7 +1063,7 @@ fn run_command(app: &mut App, command: Command) -> Result<String, String> {
             let mut config = *config;
             config.validate();
             let ai_changed = ai_settings_changed(&app.user_config, &config);
-            app.user_config = config;
+            let old = std::mem::replace(&mut app.user_config, config);
             // Like the TUI: a changed AI row replaces the running collector,
             // so turning insights off stops summaries leaving the machine and
             // a new endpoint or model takes effect without a restart.
@@ -1074,15 +1074,13 @@ fn run_command(app: &mut App, command: Command) -> Result<String, String> {
             app.ui.packet_follow = app.user_config.packet_follow;
             app.ui.timeline_window = app.user_config.timeline_window_enum();
             app.theme = netwatch::theme::by_name(&app.user_config.theme);
-            match app.user_config.save() {
-                Ok(()) => Ok(format!(
-                    "✓ saved {}",
-                    NetwatchConfig::path()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_default()
-                )),
-                Err(e) => Err(format!("✕ save failed · {e}")),
-            }
+            // Only what changed is written, so the TUI's sections, keys a
+            // newer netwatch added and comments survive (`config_file`).
+            let path = NetwatchConfig::path()
+                .ok_or_else(|| "✕ save failed · cannot determine config directory".to_string())?;
+            crate::config_file::save(&path, &old, &app.user_config)
+                .map(|()| format!("✓ saved {}", path.display()))
+                .map_err(|e| format!("✕ save failed · {e}"))
         }
     }
 }
