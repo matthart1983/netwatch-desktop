@@ -237,7 +237,7 @@ The UI uses IBM Plex Mono throughout and IBM Plex Sans for first-run prose, with
 Two files:
 
 - `~/.config/netwatch/config.toml` is netwatch's own config, shared with the TUI: theme, graph style, refresh rate, capture interface, BPF filter, GeoIP, alerts, AI insights, sandbox mode and so on. Edit it with the settings sheet.
-- `~/.config/netwatch/desktop.toml` holds the desktop's layout: the last tab and view, theme, text size (`zoom`), dense grouping, dock height, the lite window size, per-tab choices (sort, grouping, filters) and recent palette commands. Set `NETWATCH_DESKTOP_PREFS` to use another path.
+- `~/.config/netwatch/desktop.toml` holds the desktop's layout: the last tab and view, theme, text size (`zoom`), dense grouping, dock height, the lite window size, per-tab choices (sort, grouping, filters) and recent palette commands. Set `NETWATCH_DESKTOP_PREFS` to use another path. It's written atomically. A value that doesn't fit, such as an unknown tab, falls back on its own; a file that isn't valid TOML is copied to `desktop.toml.bak` and the layout starts from defaults.
 
 Exports go to `~/.cache/netwatch/exports/`. The egress policy lives at `~/.config/netwatch/egress-policy.toml`.
 

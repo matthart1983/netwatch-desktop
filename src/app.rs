@@ -63,6 +63,8 @@ pub struct Options {
     pub system_decorations: bool,
     /// How the session was started, so a failed start can be retried.
     pub demo: bool,
+    /// Shown as a toast at launch: why saved layout was reset.
+    pub notice: Option<String>,
 }
 
 impl Default for Options {
@@ -73,6 +75,7 @@ impl Default for Options {
             demo: false,
             ephemeral: true,
             system_decorations: true,
+            notice: None,
         }
     }
 }
@@ -105,6 +108,8 @@ pub struct DesktopApp {
     toast: Option<Toast>,
     last_action: u64,
     prefs: Prefs,
+    /// Where `prefs` saves: `desktop.toml` or `NETWATCH_DESKTOP_PREFS`.
+    prefs_path: Option<std::path::PathBuf>,
     /// The text size asked for last. `ctx.zoom_factor()` only follows on
     /// the next frame, so changes within one frame build on this.
     zoom: f32,
@@ -190,11 +195,12 @@ impl DesktopApp {
             lite: Default::default(),
             timeline: Default::default(),
             sheet: None,
-            toast: None,
+            toast: options.notice.map(Toast::err),
             last_action: 0,
             zoom: zoom::sanitize(prefs.zoom),
             zoom_gesture: zoom::Gesture::default(),
             prefs,
+            prefs_path: Prefs::path(),
             prefs_dirty: false,
             prefs_saved_at: Instant::now(),
             capture: crate::capture::Capture::from_args(),
@@ -1165,9 +1171,16 @@ impl DesktopApp {
             }
         }
         self.record_window(ctx);
-        let _ = self.prefs.save();
+        if let Err(e) = self.write_prefs() {
+            self.toast = Some(Toast::err(format!("✕ layout not saved · {e}")));
+        }
         self.prefs_dirty = false;
         self.prefs_saved_at = Instant::now();
+    }
+
+    fn write_prefs(&self) -> Result<(), String> {
+        let path = self.prefs_path.as_ref().ok_or("no config directory")?;
+        self.prefs.save_to(path)
     }
 }
 
@@ -1300,7 +1313,9 @@ impl eframe::App for DesktopApp {
                     self.prefs.tabs.insert(screen.tab().name().into(), state);
                 }
             }
-            let _ = self.prefs.save();
+            if let Err(e) = self.write_prefs() {
+                eprintln!("netwatch-desktop: layout not saved: {e}");
+            }
         }
     }
 }
@@ -2692,8 +2707,11 @@ mod tests {
     }
     #[test]
     fn zoom_nan_in_desktop_toml_launches_at_115_percent() {
-        let prefs: Prefs = toml::from_str("zoom = nan\ntab = \"stats\"").unwrap();
-        assert!(prefs.zoom.is_nan());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("desktop.toml");
+        std::fs::write(&path, "zoom = nan\ntab = \"stats\"").unwrap();
+        let (prefs, note) = Prefs::load_from(&path);
+        assert!(note.is_none());
         assert_eq!(prefs.tab, Tab::Stats);
         let mut app = app_with(prefs);
         let mut f = Frames::new();
@@ -2701,6 +2719,14 @@ mod tests {
         let out = f.run(&mut app, vec![]);
         assert_eq!(f.ctx.zoom_factor(), 1.15);
         assert_eq!(out.pixels_per_point, 1.15);
+        // Even a NaN that reaches the app directly is never handed to egui.
+        let mut app = app_with(Prefs {
+            zoom: f32::NAN,
+            ..Default::default()
+        });
+        let mut f = Frames::new();
+        f.launch(&mut app);
+        assert_eq!(f.ctx.zoom_factor(), 1.15);
     }
     #[test]
     fn ctrl_keys_step_presets_and_ctrl_0_gives_115_percent() {
@@ -2741,14 +2767,16 @@ mod tests {
     }
     #[test]
     fn a_saved_300_percent_survives_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("desktop.toml");
         let mut app = app_with(Prefs::default());
         let mut f = Frames::new();
         f.launch(&mut app);
         let _ = f.ctx.run(Default::default(), |ctx| {
             app.apply_nav(ctx, Nav::Zoom(zoom::Change::To(3.0)), None)
         });
-        let text = toml::to_string_pretty(&app.prefs).unwrap();
-        let prefs: Prefs = toml::from_str(&text).unwrap();
+        app.prefs.save_to(&path).unwrap();
+        let (prefs, _) = Prefs::load_from(&path);
         assert_eq!(prefs.zoom, 3.0);
         let mut app = app_with(prefs);
         let mut f = Frames::new();
@@ -2911,6 +2939,38 @@ mod tests {
                 );
             }
         }
+    }
+    #[test]
+    fn a_failed_save_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("not-a-directory");
+        std::fs::write(&file, "").unwrap();
+        let mut app = app_with(Prefs::default());
+        app.ephemeral = false;
+        app.prefs_path = Some(file.join("desktop.toml"));
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| app.save_prefs(ctx));
+        let toast = app.toast.take().unwrap();
+        assert!(!toast.ok, "{toast:?}");
+        assert!(toast.text.starts_with("✕ layout not saved · "), "{toast:?}");
+        let path = dir.path().join("desktop.toml");
+        app.prefs_path = Some(path.clone());
+        let _ = ctx.run(Default::default(), |ctx| app.save_prefs(ctx));
+        assert!(app.toast.is_none());
+        assert_eq!(Prefs::load_from(&path).0.zoom, 1.15);
+    }
+    #[test]
+    fn a_layout_reset_at_load_is_announced() {
+        let app = DesktopApp::with_options(
+            Backend::preview(),
+            Options {
+                notice: Some("desktop.toml is not valid TOML".into()),
+                ..Default::default()
+            },
+            Prefs::default(),
+        );
+        let toast = app.toast.unwrap();
+        assert!(!toast.ok && toast.text.contains("not valid TOML"));
     }
     #[test]
     fn theme_cycles_through_every_palette_and_back() {

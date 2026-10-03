@@ -170,8 +170,8 @@ fn main() -> eframe::Result<()> {
     let ephemeral = flag("--screenshot") || flag("--graph-preview") || flag("--ephemeral");
     // Screenshot and preview runs neither read nor write layout state, so
     // captures are deterministic.
-    let prefs = if ephemeral {
-        prefs::Prefs::default()
+    let (prefs, prefs_note) = if ephemeral {
+        (prefs::Prefs::default(), None)
     } else {
         prefs::Prefs::load()
     };
@@ -253,6 +253,7 @@ fn main() -> eframe::Result<()> {
                     ephemeral,
                     system_decorations: !app_chrome,
                     demo,
+                    notice: prefs_note,
                 },
                 prefs,
             );
