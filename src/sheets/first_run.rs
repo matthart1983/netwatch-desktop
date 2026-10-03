@@ -848,8 +848,9 @@ fn title_row(ui: &mut Ui, title: RichText, note: RichText) {
     if width(ui, &title) + width(ui, &note) + 16.0 <= ui.available_width() {
         ui.horizontal(|ui| {
             ui.label(title);
+            // The note shortens before it reaches the heading.
             ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                ui.label(note);
+                ui.add(egui::Label::new(note).truncate());
             });
         });
     } else {

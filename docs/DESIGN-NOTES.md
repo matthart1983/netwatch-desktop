@@ -16,7 +16,7 @@ Unknown metrics are distinct from measured zero. Kernel RTT/retransmissions are 
 - Permissions must name the running desktop executable, not `which netwatch`. Generate any grant instructions from actual platform/build capabilities and the resolved executable path; this build disables eBPF. Do not copy the mock's broad capability command.
 - Privacy copy: collection and analysis are local. Active health checks send DNS, reachability and STUN probes. Optional online lookups/AI follow the existing Netwatch configuration. Do not claim that no traffic leaves the host.
 - Muted dark text is `#8996a8`, replacing `#6c788a`, to meet the specified 4.5:1 contrast on panel and raised backgrounds.
-- Full view's minimum window is 900×600. Breakpoints are in layout points (window pixels ÷ UI zoom): below 1180 the navigator is a rail, below 1000 the inspector is a sheet (`I`). Measuring in points keeps the three columns readable at any zoom.
+- Full view's minimum window is 900×600. Breakpoints are in layout points (window pixels ÷ UI zoom), and the shell gives things up in this order: below 1180 the inspector is a sheet (`I`), below 860 the navigator is a narrow list of tab names without its groups, below 620 it is the digit rail. Measuring in points keeps the three columns readable at any zoom.
 
 The user’s subsequent graph direction supersedes the draft’s “no animations” instruction: smooth, time-based graph motion is on by default, with a Smooth motion control to disable it.
 

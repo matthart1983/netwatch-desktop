@@ -311,9 +311,9 @@ impl Connections {
     }
 
     fn control_strip(&mut self, ui: &mut Ui, cx: &mut Cx, counts: [usize; 5]) {
-        let full = ui.available_rect_before_wrap();
-        let full = Rect::from_min_size(full.min, vec2(full.width(), theme::STRIP_HEIGHT));
-        ui.allocate_rect(full, Sense::hover());
+        let top = ui.available_rect_before_wrap();
+        // The strip's first line; its options wrap below it when they must.
+        let full = Rect::from_min_size(top.min, vec2(top.width(), theme::STRIP_HEIGHT));
         let editing = self.filter_editing || !self.filter_text.is_empty();
         let field_w = if editing { 190.0 } else { 0.0 };
         let groups = [
@@ -403,21 +403,6 @@ impl Connections {
         }
         self.strip_keys_hidden = keys.len() < 4 && !editing;
         let _ = keys_w;
-        let left = Rect::from_min_max(full.min, pos2(full.right() - field_w, full.bottom()));
-        let (picked, key) = ui
-            .allocate_ui_at_rect(left, |ui| {
-                ui.set_clip_rect(left.intersect(ui.clip_rect()));
-                ui_kit::control_strip(ui, &groups, &keys)
-            })
-            .inner;
-        match picked {
-            Some((0, o)) => self.show = Show::ALL[o],
-            Some((1, o)) => self.group = Group::ALL[o],
-            _ => {}
-        }
-        if let Some(key) = key {
-            cx.go(Nav::Key(key));
-        }
         if editing {
             let field = Rect::from_min_max(
                 pos2(full.right() - field_w + 8.0, full.top() + 4.0),
@@ -442,6 +427,22 @@ impl Connections {
                     }
                 });
             });
+        }
+        // Last, so the table starts below however many lines the strip took.
+        let left = Rect::from_min_max(top.min, pos2(top.right() - field_w, top.bottom()));
+        let (picked, key) = ui
+            .allocate_ui_at_rect(left, |ui| {
+                ui.set_clip_rect(left.intersect(ui.clip_rect()));
+                ui_kit::control_strip(ui, &groups, &keys)
+            })
+            .inner;
+        match picked {
+            Some((0, o)) => self.show = Show::ALL[o],
+            Some((1, o)) => self.group = Group::ALL[o],
+            _ => {}
+        }
+        if let Some(key) = key {
+            cx.go(Nav::Key(key));
         }
     }
 }

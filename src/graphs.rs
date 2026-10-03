@@ -6,7 +6,7 @@ mod raster;
 #[cfg(test)]
 mod tests;
 
-use crate::{format, theme};
+use crate::{format, theme, ui_kit};
 use egui::{pos2, vec2, Align2, Color32, FontId, Mesh, Rect, Sense, Ui};
 use history::{Bucket, History};
 use raster::{Key, Surface};
@@ -371,52 +371,84 @@ impl Graph {
         if options.axes {
             let font = FontId::monospace(small);
             let axis = ui.painter();
-            for f in [0.0, 0.5, 1.0] {
-                let v = inverse_fraction(f, options.ceiling, options.log);
+            // Crowded axes (short or narrow graphs, large text) lose their
+            // in-between labels rather than stacking them: labels closer
+            // than 1.5 lines, centre to centre, give way.
+            let line = ui.fonts(|f| f.row_height(&font));
+            let gap = line * 0.5;
+            // Values, most telling first: the ceiling, the baseline, the
+            // mirrored ceiling, then the halfway marks.
+            let mut values = vec![(1.0, -1.0_f32), (0.0, -1.0)];
+            if options.mirrored {
+                values.push((1.0, 1.0));
+            }
+            values.push((0.5, -1.0));
+            if options.mirrored {
+                values.push((0.5, 1.0));
+            }
+            let at = |(f, side): (f64, f32)| baseline + side * f as f32 * half;
+            let spans: Vec<_> = values
+                .iter()
+                .map(|v| (at(*v) - line / 2.0, at(*v) + line / 2.0))
+                .collect();
+            for (value, keep) in values.iter().zip(ui_kit::thin_labels(&spans, gap)) {
+                if !keep {
+                    continue;
+                }
+                let v = inverse_fraction(value.0, options.ceiling, options.log);
                 let label = match options.unit {
                     Unit::Rate => format::rate(v),
                     Unit::Latency => format!("{v:.0}ms"),
                 };
                 axis.text(
-                    pos2(plot.left() - 10.0, baseline - f as f32 * half),
+                    pos2(plot.left() - 10.0, at(*value)),
                     Align2::RIGHT_CENTER,
                     &label,
                     font.clone(),
                     theme::muted(),
                 );
-                if options.mirrored && f > 0.0 {
-                    axis.text(
-                        pos2(plot.left() - 10.0, baseline + f as f32 * half),
-                        Align2::RIGHT_CENTER,
-                        &label,
-                        font.clone(),
-                        theme::muted(),
-                    );
-                }
             }
-            for f in [0.0, 0.25, 0.5, 0.75, 1.0] {
-                let age = options.window * (1.0 - f) + lag;
-                let label = if f == 1.0 && lag < 0.05 {
-                    "latest".into()
-                } else if f == 1.0 {
-                    format!("−{lag:.1}s")
-                } else if age >= 60.0 {
-                    format!("−{:.1}m", age / 60.0)
-                } else {
-                    format!("−{age:.0}s")
-                };
-                axis.text(
-                    pos2(
-                        plot.left() + plot.width() * f as f32,
-                        plot.bottom() + (small * 1.4).max(16.0),
-                    ),
-                    if f == 0.0 {
+            // Ages: the newest, the oldest, the middle, then the quarters.
+            let ages: Vec<(f64, String, Align2)> = [1.0, 0.0, 0.5, 0.25, 0.75]
+                .into_iter()
+                .map(|f| {
+                    let age = options.window * (1.0 - f) + lag;
+                    let label = if f == 1.0 && lag < 0.05 {
+                        "latest".into()
+                    } else if f == 1.0 {
+                        format!("−{lag:.1}s")
+                    } else if age >= 60.0 {
+                        format!("−{:.1}m", age / 60.0)
+                    } else {
+                        format!("−{age:.0}s")
+                    };
+                    let align = if f == 0.0 {
                         Align2::LEFT_CENTER
                     } else if f == 1.0 {
                         Align2::RIGHT_CENTER
                     } else {
                         Align2::CENTER_CENTER
-                    },
+                    };
+                    (f, label, align)
+                })
+                .collect();
+            let x = |f: f64| plot.left() + plot.width() * f as f32;
+            let spans: Vec<_> = ages
+                .iter()
+                .map(|(f, label, align)| {
+                    let w = ui_kit::text_width(ui, label, font.clone());
+                    let left = x(*f) - w * align.x().to_factor();
+                    (left, left + w)
+                })
+                .collect();
+            for ((f, label, align), keep) in ages.into_iter().zip(ui_kit::thin_labels(&spans, gap))
+            {
+                if !keep {
+                    continue;
+                }
+                axis.text(
+                    pos2(x(f), plot.bottom() + (small * 1.4).max(16.0)),
+                    align,
                     label,
                     font.clone(),
                     theme::muted(),

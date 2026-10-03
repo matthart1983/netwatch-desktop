@@ -203,7 +203,7 @@ fn check(case: Case, r: &Rendered) -> Vec<String> {
     if let Case::Inspector(_) = case {
         let rect = r.ctx.memory(|m| m.area_rect(egui::Id::new("inspector")));
         match (
-            r.screen.width() < COMPACT_WIDTH,
+            !ShellLayout::for_width(r.screen.width(), r.app.prefs.nav_collapsed).inspector,
             r.app.sheet.is_some(),
             rect,
         ) {
