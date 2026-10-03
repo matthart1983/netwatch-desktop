@@ -55,7 +55,14 @@ jobs:
         run: cargo build --locked
 
       - name: Test
-        run: cargo test --locked
+        run: cargo test --locked -- --skip render_matrix
+
+      # Every tab, sheet, dense, lite and the ☰ menu at every text size on
+      # 1366×768, 1440×900, 1920×1080 and each view's minimum window,
+      # rendered headless in a debug build so egui's layout assertions run.
+      # A step of its own so a layout break is named as one.
+      - name: Render matrix
+        run: cargo test --locked render_matrix
 
       - uses: taiki-e/install-action@v2
         with:

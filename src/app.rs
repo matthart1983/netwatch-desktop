@@ -2428,6 +2428,9 @@ fn fit_breadcrumb(ui: &Ui, mut parts: Vec<String>, budget: f32) -> Vec<String> {
 }
 
 #[cfg(test)]
+mod render_matrix;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     fn press(app: &mut DesktopApp, ctx: &egui::Context, key: Key, s: &Snapshot) {
