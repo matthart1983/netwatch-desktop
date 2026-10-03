@@ -141,6 +141,28 @@ fn boxes_keep_their_floors_and_run_past_a_short_area() {
     assert!(boxes.iter().all(|r| r.width() >= 0.0 && r.height() >= 0.0));
 }
 #[test]
+fn box_4_takes_its_floor_from_the_boxes_above_when_the_floors_fit() {
+    // Box 4's share (45%) is under its floor, but all three floors fit:
+    // NET and the middle row give way, and nothing runs past the area.
+    let area = Rect::from_min_size(egui::pos2(4.0, 30.0), egui::vec2(600.0, 508.0));
+    let conns_min = 240.0;
+    assert!(area.height() * 0.45 < conns_min);
+    assert!(NET_MIN + MIDDLE_MIN + conns_min + GAP * 2.0 <= area.height());
+    let boxes = layout(area, conns_min);
+    assert!(boxes[0].height() >= NET_MIN);
+    assert!(boxes[1].height() >= MIDDLE_MIN && boxes[2].height() >= MIDDLE_MIN);
+    assert!(boxes[3].height() >= conns_min - 0.01, "{:?}", boxes[3]);
+    for (i, rect) in boxes.iter().enumerate() {
+        assert!(
+            area.expand(0.01).contains_rect(*rect),
+            "{rect:?} in {area:?}"
+        );
+        for other in &boxes[i + 1..] {
+            assert!(!rect.intersects(*other));
+        }
+    }
+}
+#[test]
 fn box_4_keeps_three_socket_rows_at_every_text_size() {
     let s = crate::preview::snapshot(Instant::now(), 0);
     for window in [
@@ -151,8 +173,27 @@ fn box_4_keeps_three_socket_rows_at_every_text_size() {
         for zoom in crate::zoom::PRESETS {
             let mut h = Harness::new();
             h.ctx.set_zoom_factor(zoom);
+            let size = window / zoom;
             for _ in 0..4 {
-                h.render(&s, window / zoom, vec![]);
+                h.render(&s, size, vec![]);
+            }
+            // Rows count on screen, so scroll a page that scrolls to its end.
+            h.render(
+                &s,
+                size,
+                vec![egui::Event::PointerMoved(egui::pos2(size.x / 2.0, 54.0))],
+            );
+            h.render(
+                &s,
+                size,
+                vec![egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -10_000.0),
+                    modifiers: Default::default(),
+                }],
+            );
+            for _ in 0..20 {
+                h.render(&s, size, vec![]);
             }
             assert!(
                 h.dense.conns_rows >= 3.0,

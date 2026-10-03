@@ -1,10 +1,10 @@
 //! The render matrix: every view, sheet and the ☰ menu at every text-size
-//! preset, on three common screens and on each view's minimum window,
-//! rendered headless (no GPU, so it runs in CI). Nothing may panic,
-//! egui's debug assertions included; every sheet stays inside the window;
-//! the first-run "continue" button is on screen; the inspector sheet opens
-//! where its column doesn't fit; dense box 4 shows at least three socket
-//! rows.
+//! preset, on three common screens and on each view's minimum window (and
+//! dense on two tall narrow ones), rendered headless (no GPU, so it runs in
+//! CI). Nothing may panic, egui's debug assertions included; every sheet
+//! stays inside the window; the first-run "continue" button is on screen;
+//! the inspector sheet opens where its column doesn't fit; dense box 4
+//! shows at least three socket rows on screen.
 use super::*;
 use egui::{Event, PointerButton, Vec2};
 
@@ -160,6 +160,23 @@ fn render(case: Case, window: Vec2, zoom: f32, s: &Snapshot) -> Rendered {
             out = frame(&mut app, vec![]);
         }
     }
+    if let Case::Dense = case {
+        // Box 4's rows count on screen: scroll a page that scrolls to its
+        // end, from NET's header row.
+        let at = pos2(screen.center().x, theme::DATA + 24.0);
+        frame(&mut app, vec![Event::PointerMoved(at)]);
+        frame(
+            &mut app,
+            vec![Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: vec2(0.0, -10_000.0),
+                modifiers: Default::default(),
+            }],
+        );
+        for _ in 0..4 {
+            out = frame(&mut app, vec![]);
+        }
+    }
     Rendered {
         app,
         ctx,
@@ -221,6 +238,11 @@ fn check(case: Case, r: &Rendered) -> Vec<String> {
 fn windows(case: Case) -> Vec<Vec2> {
     let mut sizes = SCREENS.to_vec();
     sizes.push(minimum_window(case.view()));
+    if let Case::Dense = case {
+        // Tall and narrow: at 250% and 300% NET and the middle row took
+        // their share and box 4 ran past a page that didn't scroll.
+        sizes.extend([vec2(1366.0, 1280.0), vec2(1366.0, 1600.0)]);
+    }
     sizes
 }
 

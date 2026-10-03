@@ -896,7 +896,9 @@ impl Dense {
                 });
             }
             });
-            self.conns_rows = shown.inner_rect.intersect(rect).height().max(0.0) / row_stride;
+            // Rows on screen: the box can run past a window that doesn't
+            // scroll, and a scrolled page can hide part of it.
+            self.conns_rows = shown.inner_rect.intersect(ui.clip_rect()).height().max(0.0) / row_stride;
         });
         if let Some(key) = toggle_group {
             self.toggle_group(&key);
@@ -1053,12 +1055,20 @@ const MIDDLE_MIN: f32 = 110.0;
 const CONNS_MIN_ROWS: f32 = 3.0;
 
 /// NET and the IFACES/HEALTH row scale with the window; CONNS takes the
-/// rest. Each keeps its floor (`conns_min` for CONNS), so in an area too
-/// short for the floors the boxes run past its bottom: the caller scrolls.
+/// rest. When the rest is under `conns_min`, NET and the middle row give
+/// up the difference, down to their own floors. Only an area too short for
+/// all three floors has the boxes run past its bottom: the caller scrolls.
 pub fn layout(area: Rect, conns_min: f32) -> [Rect; 4] {
     let height = (area.height() - GAP * 2.0).max(0.0);
-    let top = (height * 0.31).max(NET_MIN);
-    let middle = (height * 0.24).max(MIDDLE_MIN);
+    let mut top = (height * 0.31).max(NET_MIN);
+    let mut middle = (height * 0.24).max(MIDDLE_MIN);
+    let short = conns_min - (height - top - middle);
+    let spare = (top - NET_MIN) + (middle - MIDDLE_MIN);
+    if short > 0.0 && spare > 0.0 {
+        let give = short.min(spare) / spare;
+        top -= (top - NET_MIN) * give;
+        middle -= (middle - MIDDLE_MIN) * give;
+    }
     let conns = (height - top - middle).max(conns_min);
     let half = ((area.width() - GAP) / 2.0).max(0.0);
     let y = area.top() + top + GAP;
