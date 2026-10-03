@@ -2,9 +2,20 @@
 name = "netwatch-desktop"
 version = "0.1.1"
 edition = "2021"
+# image 0.25.10 and time 0.3.55 need 1.88. clippy's incompatible_msrv lint
+# flags any std API this crate uses that is newer than this.
+rust-version = "1.88"
 authors = ["Matt Hartley <matthew.t.hartley@gmail.com>"]
-description = "Native desktop companion for netwatch — Workbench shell over the same collectors as the TUI."
+description = "See which programs on this computer use the network and what's wrong with it. A desktop app built on netwatch."
 license = "MIT"
+repository = "https://github.com/matthart1983/netwatch-desktop"
+homepage = "https://github.com/matthart1983/netwatch-desktop"
+readme = "README.md"
+keywords = ["network-monitor", "netwatch", "egui", "packet-capture", "diagnostics"]
+categories = ["network-programming", "gui", "visualization"]
+# The screenshots are for the repository's README, about 2 MB; crates.io
+# shows README images from the repository.
+exclude = ["docs/screenshots/", ".github/"]
 
 [[bin]]
 name = "netwatch-desktop"
