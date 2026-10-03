@@ -612,17 +612,13 @@ impl Packets {
         cx.run(Command::SetCaptureInterface(next));
     }
 
+    /// First run's grant for this platform and binary, so the app only ever
+    /// offers one command.
     fn grant_command() -> String {
-        let exe = std::env::current_exe()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| "netwatch-desktop".into());
-        if cfg!(target_os = "macos") {
-            "sudo chgrp admin /dev/bpf* && sudo chmod g+rw /dev/bpf*".into()
-        } else if cfg!(target_os = "windows") {
-            "winget install Insecure.Npcap".into()
-        } else {
-            format!("sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' \"{exe}\"")
-        }
+        crate::sheets::first_run::grant_command(
+            std::env::consts::OS,
+            &crate::sheets::first_run::exe_path(),
+        )
     }
 }
 

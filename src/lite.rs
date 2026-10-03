@@ -118,10 +118,12 @@ pub struct Lite {
     pub detail: bool,
 }
 
-fn footer_hints() -> Vec<Hint> {
+/// The footer's keys. Pause is `p`, as everywhere else: space reached
+/// nothing in lite, so the hint neither worked as a key nor as a click.
+pub(crate) fn footer_hints() -> Vec<Hint> {
     vec![
         Hint::ch('V', "view"),
-        Hint::new(Key::Space, "pause"),
+        Hint::ch('p', "pause"),
         Hint::ch('d', "diagnose"),
         Hint::ch(',', "settings"),
         Hint::ch('?', "help"),

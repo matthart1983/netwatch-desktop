@@ -286,7 +286,7 @@ pub struct Shared {
 /// Everything a screen can read or request during one frame.
 pub struct Cx<'a> {
     pub s: &'a Snapshot,
-    /// Display paused (`p` / space): measurements are pinned.
+    /// Display paused (`p`): measurements are pinned.
     pub paused: bool,
     pub commands: &'a mut Vec<Command>,
     pub nav: &'a mut Vec<Nav>,

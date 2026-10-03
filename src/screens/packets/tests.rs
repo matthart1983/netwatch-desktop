@@ -154,12 +154,35 @@ fn renders_empty_snapshot_with_permissions_card() {
     frame(&ctx, &mut screen, &mut h, &s);
     assert!(screen.capture_unavailable(&s));
     assert!(screen.stream.is_none());
-    // y copies the grant command for this binary.
+    // y copies the grant command for this binary: first run's, the only one.
     assert!(screen.key(Key::Char('y'), &mut h.cx(&s, None)));
-    assert!(screen
-        .pending_copy
-        .as_deref()
-        .is_some_and(|c| c.contains("setcap") || cfg!(not(target_os = "linux"))));
+    let copied = screen.pending_copy.clone().unwrap();
+    assert_eq!(
+        copied,
+        crate::sheets::first_run::grant_command(
+            std::env::consts::OS,
+            &crate::sheets::first_run::exe_path()
+        )
+    );
+    assert!(copied.contains("setcap cap_net_raw=ep") || cfg!(not(target_os = "linux")));
+    assert!(
+        copied.matches("cap_").count() <= 1,
+        "one capability: {copied}"
+    );
+}
+
+#[test]
+fn capture_needs_only_what_the_grant_gives() {
+    let names: Vec<&str> = view::capture_needs("linux")
+        .iter()
+        .map(|(name, ..)| *name)
+        .collect();
+    assert_eq!(names, ["cap_net_raw"]);
+    let grant = crate::sheets::first_run::grant_command("linux", "/usr/bin/netwatch-desktop");
+    assert_eq!(
+        grant,
+        "sudo setcap cap_net_raw=ep \"/usr/bin/netwatch-desktop\""
+    );
 }
 
 #[test]

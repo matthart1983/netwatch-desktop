@@ -139,6 +139,11 @@ impl Prefs {
     /// directory, then renames it over `path`, so a crash or a full disk
     /// mid-write leaves the old file whole. A symlinked `path` is updated
     /// where it points.
+    ///
+    /// Owner-only, like netwatch's own files: the temporary file is created
+    /// 0600 and replaces an older 0644 one, and directories it has to create
+    /// are 0700. A directory that already exists keeps its mode, since
+    /// `NETWATCH_DESKTOP_PREFS` can point anywhere.
     pub fn save_to(&self, path: &Path) -> Result<(), String> {
         let mut prefs = self.clone();
         prefs.sanitize();
@@ -148,7 +153,10 @@ impl Prefs {
             Some(p) if !p.as_os_str().is_empty() => p,
             _ => Path::new("."),
         };
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        netwatch::owner_only::dir_builder()
+            .recursive(true)
+            .create(parent)
+            .map_err(|e| e.to_string())?;
         let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
         temp.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
         temp.as_file().sync_all().map_err(|e| e.to_string())?;
@@ -293,5 +301,35 @@ mod tests {
         prefs.save_to(&link).unwrap();
         assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
         assert_eq!(Prefs::load_from(&target).0.zoom, 2.0);
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the file it points at is owner-only too");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prefs_are_saved_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let dir = root.path().join("netwatch");
+        let path = dir.join("desktop.toml");
+        let prefs = Prefs {
+            tab: Tab::Egress,
+            ..Default::default()
+        };
+        prefs.save_to(&path).unwrap();
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&path), 0o600);
+        // A directory that was already there is left as it was.
+        assert_eq!(mode(root.path()), 0o755);
+        // A file an older desktop wrote 0644 is narrowed, and replaced whole.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::write(&path, "x".repeat(4096)).unwrap();
+        prefs.save_to(&path).unwrap();
+        assert_eq!(mode(&path), 0o600);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(toml::from_str::<Prefs>(&text).unwrap(), prefs);
     }
 }

@@ -1069,18 +1069,7 @@ impl Packets {
                     .filter(|c| c.id == "capture" || c.id == "capture_library")
                     .collect();
                 if checked.is_empty() {
-                    let rows: &[(&str, &str, &str)] = if cfg!(target_os = "macos") {
-                        &[("bpf devices", "required", "read access to /dev/bpf*")]
-                    } else if cfg!(target_os = "windows") {
-                        &[("npcap", "required", "the capture driver")]
-                    } else {
-                        &[
-                            ("cap_net_raw", "required", "open a raw socket to read frames"),
-                            ("cap_bpf", "required", "attach the kernel capture filter"),
-                            ("cap_perfmon", "optional", "bpf maps for socket attribution"),
-                        ]
-                    };
-                    for (name, need, why) in rows {
+                    for (name, need, why) in capture_needs(std::env::consts::OS) {
                         let mut job = LayoutJob::default();
                         job_text(
                             &mut job,
@@ -1785,4 +1774,19 @@ fn dns_baseline(cx: &Cx) -> Option<f64> {
         .iter()
         .find(|(_, metric, ..)| metric == "dns.rtt_p50")
         .map(|(_, _, mean, ..)| *mean)
+}
+
+/// What capture needs on `os`, for the card before netwatch has checked.
+/// Linux lists `cap_net_raw` alone, the one capability
+/// [`crate::sheets::first_run::grant_command`] grants and this build uses.
+pub(super) fn capture_needs(os: &str) -> &'static [(&'static str, &'static str, &'static str)] {
+    match os {
+        "macos" => &[("bpf devices", "required", "read access to /dev/bpf*")],
+        "windows" => &[("npcap", "required", "the capture driver")],
+        _ => &[(
+            "cap_net_raw",
+            "required",
+            "open a raw socket to read frames",
+        )],
+    }
 }

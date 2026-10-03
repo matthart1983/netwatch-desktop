@@ -578,9 +578,16 @@ impl DesktopApp {
                 self.backend = Backend::spawn_session(self.demo, Some(Mode::Disabled));
             }
             Key::Char('S') if failed => {
-                let mut config = netwatch::config::NetwatchConfig::load();
-                config.sandbox = "on".into();
-                match config.save() {
+                use netwatch::config::NetwatchConfig;
+                let old = NetwatchConfig::load();
+                let config = NetwatchConfig {
+                    sandbox: "on".into(),
+                    ..old.clone()
+                };
+                let saved = NetwatchConfig::path()
+                    .ok_or_else(|| "cannot determine config directory".to_string())
+                    .and_then(|path| crate::config_file::save(&path, &old, &config));
+                match saved {
                     Ok(()) => {
                         self.backend = Backend::spawn_session(self.demo, None);
                         self.toast = Some(Toast::ok("✓ sandbox = \"on\" saved"));
@@ -2395,6 +2402,36 @@ mod tests {
         // the shell drop every letter and digit as "typing".
         assert!(focused_after(false));
         assert!(!focused_after(true));
+    }
+    #[test]
+    fn lite_footer_pause_hint_pauses() {
+        let mut app = DesktopApp::new(Backend::preview(), Tab::Dashboard);
+        let ctx = egui::Context::default();
+        let s = crate::backend::tests::snapshot();
+        press(&mut app, &ctx, Key::Char('L'), &s);
+        assert_eq!(app.view(), View::Lite);
+        let pause = crate::lite::footer_hints()
+            .into_iter()
+            .find(|h| h.label == "pause")
+            .unwrap();
+        assert_eq!(pause.key, Key::Char('p'));
+        // The footer dispatches the hint's key, as a click on it does.
+        let a = Arc::new(crate::backend::tests::snapshot());
+        press(&mut app, &ctx, pause.key, &s);
+        assert!(Arc::ptr_eq(
+            &app.displayed_snapshot(Some(a.clone())).unwrap(),
+            &a
+        ));
+        let b = Arc::new(crate::backend::tests::snapshot());
+        assert!(Arc::ptr_eq(
+            &app.displayed_snapshot(Some(b.clone())).unwrap(),
+            &a
+        ));
+        press(&mut app, &ctx, pause.key, &s);
+        assert!(Arc::ptr_eq(
+            &app.displayed_snapshot(Some(b.clone())).unwrap(),
+            &b
+        ));
     }
     #[test]
     fn view_cycles_full_lite_dense_full() {

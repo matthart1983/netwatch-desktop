@@ -7,7 +7,8 @@
 //! they queue [`Command`]s, and every command reports one [`ActionResult`]
 //! that the footer toast shows.
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -198,16 +199,17 @@ pub struct Snapshot {
     pub recorder_window: String,
     pub recorder_reason: Option<String>,
     pub diagnose: Arc<DiagnoseSnapshot>,
-    pub export_dir: PathBuf,
+    /// `None` without a cache directory; exports then refuse.
+    pub export_dir: Option<PathBuf>,
     /// The latest command outcome; `seq` changes once per command.
     pub action: Option<ActionResult>,
 }
 
-pub fn export_dir() -> PathBuf {
-    dirs::cache_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("netwatch")
-        .join("exports")
+/// Where exports land: netwatch's `cache/netwatch/exports`, the directory
+/// its sandbox grants. `None` without a cache directory (no HOME): exports
+/// refuse rather than land somewhere shared such as /tmp.
+pub fn export_dir() -> Option<PathBuf> {
+    dirs::cache_dir().map(|d| d.join("netwatch").join("exports"))
 }
 
 impl Snapshot {
@@ -721,10 +723,13 @@ impl Backend {
             let mut tracker = crate::telemetry::Tracker::default();
             let mut action: Option<ActionResult> = None;
             let mut seq = 0;
+            // config.toml as last read or written, which the next save
+            // diffs against (`save_config`).
+            let mut saved = app.user_config.clone();
             loop {
                 for command in pending.try_iter() {
                     seq += 1;
-                    let outcome = run_command(&mut app, command);
+                    let outcome = run_command(&mut app, &mut saved, command);
                     action = Some(ActionResult {
                         seq,
                         ok: outcome.is_ok(),
@@ -806,10 +811,77 @@ fn timestamp() -> String {
     chrono::Local::now().format("%Y%m%d_%H%M%S").to_string()
 }
 
+/// The export directory, created 0700, or narrowed to 0700 when an older
+/// desktop left it 0755. Everything written into it is 0600 too: exports
+/// hold addresses, hostnames, process names and packet bytes.
 fn ensure_export_dir() -> Result<PathBuf, String> {
-    let dir = export_dir();
-    std::fs::create_dir_all(&dir)
+    prepare_export_dir(export_dir())
+}
+
+fn prepare_export_dir(dir: Option<PathBuf>) -> Result<PathBuf, String> {
+    let dir = dir.ok_or_else(|| {
+        "✕ export failed · no cache directory to export into · set HOME".to_string()
+    })?;
+    netwatch::owner_only::create_dir_all(&dir)
         .map_err(|e| format!("✕ export failed · {} · {e}", dir.display()))?;
+    Ok(dir)
+}
+
+/// Create `path` empty and 0600 for a netwatch writer that opens it with
+/// `File::create`: that truncates the file and keeps its mode, where a file
+/// the writer created itself would take the umask, usually 0644.
+fn owner_only_file(path: &Path) -> std::io::Result<()> {
+    netwatch::owner_only::create(path).map(drop)
+}
+
+fn export_pcap(
+    dir: &Path,
+    label: &str,
+    stamp: &str,
+    packets: &[CapturedPacket],
+) -> Result<String, String> {
+    let path = dir.join(format!("netwatch_{label}_{stamp}.pcap"));
+    netwatch::collectors::packets::export_pcap(packets, &path.to_string_lossy())
+        .map(|n| format!("✓ exported {} · {n} packets", path.display()))
+        .map_err(|e| format!("✕ pcap export failed · {e}"))
+}
+
+fn export_connections(dir: &Path, stamp: &str, conns: &[Connection]) -> Result<String, String> {
+    let json = dir.join(format!("connections_{stamp}.json"));
+    let csv = dir.join(format!("connections_{stamp}.csv"));
+    owner_only_file(&json)
+        .and_then(|_| owner_only_file(&csv))
+        .map_err(|e| format!("✕ export failed · {e}"))?;
+    netwatch::collectors::connections::export_json(conns, &json.to_string_lossy())
+        .and_then(|_| netwatch::collectors::connections::export_csv(conns, &csv.to_string_lossy()))
+        .map(|n| format!("✓ exported {} · csv · {n} sockets", json.display()))
+        .map_err(|e| format!("✕ export failed · {e}"))
+}
+
+fn export_csv(dir: &Path, label: &str, stamp: &str, csv: &str) -> Result<String, String> {
+    let path = dir.join(format!("netwatch_{label}_{stamp}.csv"));
+    let rows = csv.lines().count().saturating_sub(1);
+    netwatch::owner_only::create(&path)
+        .and_then(|mut file| file.write_all(csv.as_bytes()))
+        .map(|_| format!("✓ exported {} · {rows} rows", path.display()))
+        .map_err(|e| format!("✕ export failed · {e}"))
+}
+
+fn export_egress(dir: &Path, stamp: &str, profiler: &EgressProfiler) -> Result<String, String> {
+    let path = dir.join(format!("netwatch_egress_{stamp}.ndjson"));
+    owner_only_file(&path)
+        .and_then(|_| profiler.export_ndjson(&path))
+        .map(|n| format!("✓ exported {} · {n} records", path.display()))
+        .map_err(|e| format!("✕ egress export failed · {e}"))
+}
+
+/// report.md and report.json in a directory of their own, as netwatch's
+/// `export_diagnose_report` writes them, but owner-only.
+fn export_report(dir: &Path, stamp: &str, markdown: &str, json: &str) -> std::io::Result<PathBuf> {
+    let dir = dir.join(format!("netwatch_diagnose_{stamp}"));
+    netwatch::owner_only::create_dir_all(&dir)?;
+    netwatch::owner_only::create(&dir.join("report.md"))?.write_all(markdown.as_bytes())?;
+    netwatch::owner_only::create(&dir.join("report.json"))?.write_all(json.as_bytes())?;
     Ok(dir)
 }
 
@@ -826,7 +898,12 @@ fn reload_policy(app: &mut App, path: &std::path::Path) -> bool {
     app.egress_profiler.has_policy()
 }
 
-fn run_command(app: &mut App, command: Command) -> Result<String, String> {
+/// `saved` is config.toml as this session last read or wrote it.
+fn run_command(
+    app: &mut App,
+    saved: &mut NetwatchConfig,
+    command: Command,
+) -> Result<String, String> {
     match command {
         Command::ToggleRecorder => {
             if app.incident_recorder.is_armed() {
@@ -849,17 +926,31 @@ fn run_command(app: &mut App, command: Command) -> Result<String, String> {
             .freeze("manual freeze")
             .map(|_| "flight recorder frozen · manual freeze".to_string())
             .map_err(|e| format!("✕ freeze failed · {e}")),
-        Command::ExportReport => {
+        Command::ExportReport if app.diagnose.is_demo() => {
+            // netwatch shows the preview and writes nothing for a demo.
             netwatch::diagnose::controller::export_diagnose_report(app);
             let status = app.diagnose.status.clone().unwrap_or_default();
             app.ui.export_status = Some(status.clone());
-            if status.to_lowercase().contains("fail") {
-                Err(status)
-            } else {
-                Ok(status)
-            }
+            Ok(status)
+        }
+        Command::ExportReport => {
+            let dir = ensure_export_dir()?;
+            let report = netwatch::diagnose::controller::build_diagnose_report(app);
+            let json = report
+                .to_json()
+                .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"));
+            let outcome = export_report(&dir, &timestamp(), &report.to_markdown(), &json)
+                .map(|path| format!("report.md + report.json → {}", path.display()))
+                .map_err(|e| format!("export failed: {e}"));
+            let status = outcome.clone().unwrap_or_else(|e| e);
+            app.diagnose.set_status(status.clone());
+            app.ui.export_status = Some(status);
+            outcome
         }
         Command::ExportIncident => {
+            // netwatch writes the bundle owner-only into the same directory;
+            // this refuses without one and narrows an old 0755 one first.
+            ensure_export_dir()?;
             app.export_incident_bundle();
             let status = app.ui.export_status.clone().unwrap_or_default();
             match status.strip_prefix("Incident bundle saved to ") {
@@ -927,10 +1018,7 @@ fn run_command(app: &mut App, command: Command) -> Result<String, String> {
                 .filter(|p| wanted.contains(&p.id))
                 .cloned()
                 .collect();
-            let path = dir.join(format!("netwatch_{label}_{}.pcap", timestamp()));
-            netwatch::collectors::packets::export_pcap(&packets, &path.to_string_lossy())
-                .map(|n| format!("✓ exported {} · {n} packets", path.display()))
-                .map_err(|e| format!("✕ pcap export failed · {e}"))
+            export_pcap(&dir, &label, &timestamp(), &packets)
         }
         Command::Whois(ip) => {
             app.whois_cache.request(&ip);
@@ -942,32 +1030,13 @@ fn run_command(app: &mut App, command: Command) -> Result<String, String> {
         }
         Command::ExportConnections => {
             let dir = ensure_export_dir()?;
-            let stamp = timestamp();
-            let conns = app.connection_collector.connections();
-            let json = dir.join(format!("connections_{stamp}.json"));
-            let csv = dir.join(format!("connections_{stamp}.csv"));
-            netwatch::collectors::connections::export_json(&conns, &json.to_string_lossy())
-                .and_then(|_| {
-                    netwatch::collectors::connections::export_csv(&conns, &csv.to_string_lossy())
-                })
-                .map(|n| format!("✓ exported {} · csv · {n} sockets", json.display()))
-                .map_err(|e| format!("✕ export failed · {e}"))
+            export_connections(&dir, &timestamp(), &app.connection_collector.connections())
         }
         Command::ExportCsv { label, csv } => {
-            let dir = ensure_export_dir()?;
-            let path = dir.join(format!("netwatch_{label}_{}.csv", timestamp()));
-            let rows = csv.lines().count().saturating_sub(1);
-            std::fs::write(&path, csv)
-                .map(|_| format!("✓ exported {} · {rows} rows", path.display()))
-                .map_err(|e| format!("✕ export failed · {e}"))
+            export_csv(&ensure_export_dir()?, &label, &timestamp(), &csv)
         }
         Command::ExportEgress => {
-            let dir = ensure_export_dir()?;
-            let path = dir.join(format!("netwatch_egress_{}.ndjson", timestamp()));
-            app.egress_profiler
-                .export_ndjson(&path)
-                .map(|n| format!("✓ exported {} · {n} records", path.display()))
-                .map_err(|e| format!("✕ egress export failed · {e}"))
+            export_egress(&ensure_export_dir()?, &timestamp(), &app.egress_profiler)
         }
         Command::EgressWrite(edit) => {
             edit.write(app.diagnose.is_demo())?;
@@ -1013,17 +1082,26 @@ fn run_command(app: &mut App, command: Command) -> Result<String, String> {
             app.ui.packet_follow = app.user_config.packet_follow;
             app.ui.timeline_window = app.user_config.timeline_window_enum();
             app.theme = netwatch::theme::by_name(&app.user_config.theme);
-            match app.user_config.save() {
-                Ok(()) => Ok(format!(
-                    "✓ saved {}",
-                    NetwatchConfig::path()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_default()
-                )),
-                Err(e) => Err(format!("✕ save failed · {e}")),
-            }
+            save_config(saved, NetwatchConfig::path(), &app.user_config)
         }
     }
+}
+
+/// Write `config` to `path`. Only what changed since `saved` is written, so
+/// the TUI's sections, keys a newer netwatch added and comments survive
+/// (`config_file`). `saved` moves on only when the write succeeds: after a
+/// refused or failed save the file still holds the old values, and a retry
+/// must write the same changes again rather than find nothing to do.
+fn save_config(
+    saved: &mut NetwatchConfig,
+    path: Option<PathBuf>,
+    config: &NetwatchConfig,
+) -> Result<String, String> {
+    let path =
+        path.ok_or_else(|| "✕ save failed · cannot determine config directory".to_string())?;
+    crate::config_file::save(&path, saved, config).map_err(|e| format!("✕ save failed · {e}"))?;
+    *saved = config.clone();
+    Ok(format!("✓ saved {}", path.display()))
 }
 
 fn ai_settings_changed(old: &NetwatchConfig, new: &NetwatchConfig) -> bool {
@@ -1292,5 +1370,92 @@ pub(crate) mod tests {
         assert!(!ai_settings_changed(&old, &unrelated));
         assert!(insights_collector_for(&off).is_none());
         assert!(insights_collector_for(&moved).is_some());
+    }
+    #[test]
+    fn a_save_refused_until_the_file_is_fixed_is_written_on_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let read = || std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, "theme = \"dark\"\n[alerts\n").unwrap();
+        let mut saved = NetwatchConfig::default();
+        let nord = NetwatchConfig {
+            theme: "nord".into(),
+            ..saved.clone()
+        };
+        let refused = save_config(&mut saved, Some(path.clone()), &nord).unwrap_err();
+        assert!(refused.contains("fix it before saving"), "{refused}");
+        assert_eq!(read(), "theme = \"dark\"\n[alerts\n");
+
+        // The settings sheet's S again, once the typo is fixed: the same
+        // config, which the file still lacks.
+        std::fs::write(&path, "theme = \"dark\"\n").unwrap();
+        let ok = save_config(&mut saved, Some(path.clone()), &nord).unwrap();
+        assert_eq!(ok, format!("✓ saved {}", path.display()));
+        assert_eq!(read(), "theme = \"nord\"\n");
+        assert_eq!(saved.theme, "nord");
+
+        let nowhere = save_config(&mut saved, None, &nord).unwrap_err();
+        assert!(
+            nowhere.contains("cannot determine config directory"),
+            "{nowhere}"
+        );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn exports_are_owner_only_and_need_a_cache_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        // No HOME means no export, not a shared /tmp directory.
+        let refused = prepare_export_dir(None).unwrap_err();
+        assert!(refused.contains("no cache directory"), "{refused}");
+
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("netwatch").join("exports");
+        // An older desktop created it 0755; the next export narrows it.
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let dir = prepare_export_dir(Some(dir)).unwrap();
+        assert_eq!(mode(&dir), 0o700);
+
+        let stamp = "20261003_120000";
+        let conns = crate::preview::connections();
+        let ok = export_connections(&dir, stamp, &conns).unwrap();
+        assert!(ok.contains(&format!("{} sockets", conns.len())), "{ok}");
+        export_csv(&dir, "interfaces", stamp, "name,rx\neth0,1\n").unwrap();
+        export_egress(&dir, stamp, &EgressProfiler::new()).unwrap();
+        export_pcap(&dir, "all", stamp, &[]).unwrap();
+        let report = export_report(&dir, stamp, "# report\n", "{}").unwrap();
+        assert_eq!(mode(&report), 0o700);
+
+        let mut files = Vec::new();
+        let mut dirs = vec![dir.clone()];
+        while let Some(d) = dirs.pop() {
+            for entry in std::fs::read_dir(&d).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    assert_eq!(mode(&path), 0o700, "{}", path.display());
+                    dirs.push(path);
+                } else {
+                    assert_eq!(mode(&path), 0o600, "{}", path.display());
+                    files.push(path.file_name().unwrap().to_string_lossy().into_owned());
+                }
+            }
+        }
+        files.sort();
+        assert_eq!(
+            files,
+            [
+                format!("connections_{stamp}.csv"),
+                format!("connections_{stamp}.json"),
+                format!("netwatch_all_{stamp}.pcap"),
+                format!("netwatch_egress_{stamp}.ndjson"),
+                format!("netwatch_interfaces_{stamp}.csv"),
+                "report.json".to_string(),
+                "report.md".to_string(),
+            ]
+        );
+        // netwatch's writers filled the files they were handed.
+        let json = std::fs::read_to_string(dir.join(format!("connections_{stamp}.json"))).unwrap();
+        assert!(json.contains("browser"), "{json}");
     }
 }
