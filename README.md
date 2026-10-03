@@ -384,7 +384,7 @@ The screenshots in `docs/screenshots/` are drawn headless by the test suite from
 cargo test write_screenshots -- --ignored
 ```
 
-A normal `cargo test` draws the same frames and fails if any of them shows an address outside the documentation ranges or this machine's host name, user name, interface names or addresses.
+A normal `cargo test` draws the same frames and fails if any of them shows an address outside the documentation ranges or this machine's host name, user name, interface names or addresses. Each PNG carries a stamp of the text on the frame it was drawn from, and the test also fails when a committed screenshot doesn't match the frame drawn now, such as a capture from a live session or a shot left stale after its text changed.
 
 For a quick look at the real window, `--screenshot` saves one PNG and exits. Use it with `--graph-preview`, which draws a synthetic snapshot. `--demo` adds the demo scenario on top of this machine's live data, so its screenshots show your addresses, processes and PIDs:
 

@@ -2366,6 +2366,7 @@ dependencies = [
  "egui",
  "image",
  "netwatch-tui",
+ "png",
  "ratatui",
  "serde",
  "serde_json",

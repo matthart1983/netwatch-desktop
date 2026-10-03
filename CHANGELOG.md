@@ -34,7 +34,7 @@ The first public release. A fresh clone now builds from crates.io, text size has
 - First run, lite and the sheets stack into one scrolling column in small windows, and first run's continue button stays on screen.
 - Control strips wrap whole groups onto the next line; narrow tables scroll sideways; crowded axis labels and notes thin out or shorten instead of overlapping.
 - README is rewritten for a first-time user: install, text size, permissions, the traffic the app sends, and known limitations.
-- README screenshots are drawn headless from synthetic data, with a test that fails if any shows a real address or this machine's names.
+- README screenshots are drawn headless from synthetic data. Tests fail if any shows a real address or this machine's names, or if a committed screenshot isn't the frame drawn from that data.
 
 ### Fixed
 - A probe netwatch couldn't send, such as a gateway that blocks ping and has no open TCP port, showed as a red dead link. It now shows as unmeasured, with the reason on hover and on the dashboard card.

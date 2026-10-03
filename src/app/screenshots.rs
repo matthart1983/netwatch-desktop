@@ -10,7 +10,9 @@
 //! The normal suite draws the same frames and fails if any text on them
 //! holds an address outside the documentation ranges, a MAC outside the
 //! documentation block, a home directory, or this machine's host name,
-//! user name, interface names or addresses.
+//! user name, interface names or addresses. Each PNG carries a stamp of the
+//! frame it was drawn from, and the suite also fails if a committed PNG
+//! isn't one of these frames as they're drawn now.
 use super::*;
 use egui::{Event, PointerButton, Vec2};
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -226,6 +228,14 @@ impl Session {
         session
     }
 
+    /// The stamp for the frame drawn last.
+    fn stamp(&self, shot: &Shot) -> String {
+        stamp(
+            shot,
+            &visible_texts(self.out.as_ref().unwrap(), self.screen),
+        )
+    }
+
     fn png(&self, shot: &Shot) -> Vec<u8> {
         let out = self.out.as_ref().unwrap();
         let primitives = self
@@ -238,22 +248,73 @@ impl Session {
             size,
             theme::window_bg(),
         );
-        let mut png = Vec::new();
-        let encoder = image::codecs::png::PngEncoder::new_with_quality(
-            &mut png,
-            image::codecs::png::CompressionType::Best,
-            image::codecs::png::FilterType::Adaptive,
-        );
-        image::ImageEncoder::write_image(
-            encoder,
-            &rgba,
-            size[0] as u32,
-            size[1] as u32,
-            image::ExtendedColorType::Rgba8,
-        )
-        .unwrap();
-        png
+        let mut bytes = Vec::new();
+        let mut encoder = png::Encoder::new(&mut bytes, size[0] as u32, size[1] as u32);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_compression(png::Compression::High);
+        encoder.set_filter(png::Filter::Adaptive);
+        encoder
+            .add_text_chunk(STAMP.into(), self.stamp(shot))
+            .unwrap();
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&rgba).unwrap();
+        writer.finish().unwrap();
+        bytes
     }
+}
+
+/// The keyword of the PNG text chunk that holds a screenshot's [`stamp`].
+const STAMP: &str = "netwatch-desktop screenshot";
+
+/// What a shot shows, as a hash: its file, window and text size, and every
+/// visible text in drawing order. Clock times count as hh:mm:ss, because
+/// the timeline dock's can move by a second between two runs. FNV-1a, so
+/// the value is the same on every machine and toolchain.
+fn stamp(shot: &Shot, texts: &[(String, Rect)]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |bytes: &[u8]| {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    let head = format!(
+        "{} {}x{} {}",
+        shot.file, shot.window.x, shot.window.y, shot.zoom
+    );
+    eat(head.as_bytes());
+    for (text, _) in texts {
+        eat(b"\n");
+        eat(without_clock_times(text).as_bytes());
+    }
+    format!("{hash:016x}")
+}
+
+/// `text` with each time of day, such as 06:41:22, written as hh:mm:ss.
+/// Digits that are part of a MAC or IPv6 address stay.
+fn without_clock_times(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let joined = |c: &char| c.is_ascii_hexdigit() || *c == ':';
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let time = chars.len() - i >= 8
+            && (0..8).all(|k| match k % 3 {
+                2 => chars[i + k] == ':',
+                _ => chars[i + k].is_ascii_digit(),
+            })
+            && (i == 0 || !joined(&chars[i - 1]))
+            && chars.get(i + 8).is_none_or(|c| !joined(c));
+        if time {
+            out.push_str("hh:mm:ss");
+            i += 8;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 /// Every text drawn at least partly inside its clip and the window.
@@ -529,6 +590,73 @@ fn readme_shows_every_screenshot_and_no_other() {
             "README shows {file}, which nothing draws"
         );
     }
+}
+
+#[test]
+fn the_stamp_follows_the_text_but_not_the_clock() {
+    let texts = |t: &str| vec![(t.to_string(), Rect::NOTHING)];
+    let first = stamp(&SHOTS[0], &texts("first at 06:41:22 (55 ms)"));
+    assert_eq!(first, stamp(&SHOTS[0], &texts("first at 06:42:03 (55 ms)")));
+    assert_ne!(first, stamp(&SHOTS[0], &texts("first at 06:41:22 (56 ms)")));
+    assert_ne!(first, stamp(&SHOTS[1], &texts("first at 06:41:22 (55 ms)")));
+    assert_eq!(
+        without_clock_times("02:00:5e:00:53:10 · 2001:db8::12:34:56 · since 06:48 · ≤06:50:00"),
+        "02:00:5e:00:53:10 · 2001:db8::12:34:56 · since 06:48 · ≤hh:mm:ss"
+    );
+}
+
+/// Every PNG in docs/screenshots is a frame drawn here, as it's drawn now:
+/// one of `SHOTS`, at the shot's size, stamped with what the frame shows.
+/// So the leak check above covers the committed pictures, and a capture
+/// from a live session or a shot not redrawn after a visible change fails.
+#[test]
+fn committed_screenshots_are_the_frames_drawn_here() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/screenshots");
+    let mut failures = Vec::new();
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+        if !SHOTS.iter().any(|s| s.file == name) {
+            failures.push(format!("{name}: no shot draws it"));
+        }
+    }
+    for shot in SHOTS {
+        let Ok(bytes) = std::fs::read(dir.join(shot.file)) else {
+            failures.push(format!("{}: missing", shot.file));
+            continue;
+        };
+        let reader = match png::Decoder::new(std::io::Cursor::new(bytes)).read_info() {
+            Ok(reader) => reader,
+            Err(e) => {
+                failures.push(format!("{}: not a PNG: {e}", shot.file));
+                continue;
+            }
+        };
+        let info = reader.info();
+        let size = (shot.window.x as u32, shot.window.y as u32);
+        if (info.width, info.height) != size {
+            failures.push(format!(
+                "{}: {}×{}, the shot is {}×{}",
+                shot.file, info.width, info.height, size.0, size.1
+            ));
+        }
+        let found = info
+            .uncompressed_latin1_text
+            .iter()
+            .find(|t| t.keyword == STAMP)
+            .map(|t| t.text.clone());
+        let drawn = Session::take(shot, false).stamp(shot);
+        if found.as_deref() != Some(drawn.as_str()) {
+            failures.push(format!(
+                "{}: stamp {found:?}, but the frame drawn now is {drawn:?}",
+                shot.file
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{}\nRedraw them with `cargo test write_screenshots -- --ignored`.",
+        failures.join("\n")
+    );
 }
 
 /// Redraws docs/screenshots. Ignored: rasterising on the CPU is slow, and

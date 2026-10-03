@@ -40,7 +40,7 @@ If your change is visible in a README screenshot, redraw them:
 cargo test write_screenshots -- --ignored
 ```
 
-The screenshots come from the synthetic snapshot in `src/app/screenshots/fixture.rs`, and a normal `cargo test` fails if any of them shows a real address or a name from your machine. Never commit a screenshot taken from a live session. That includes `--demo`, which adds a scenario on top of your real sockets, addresses and processes.
+The screenshots come from the synthetic snapshot in `src/app/screenshots/fixture.rs`. A normal `cargo test` fails if any of them shows a real address or a name from your machine, or if a committed PNG doesn't match the frame the test draws now, so commit the redrawn PNGs with the change that altered them. Never commit a screenshot taken from a live session. That includes `--demo`, which adds a scenario on top of your real sockets, addresses and processes.
 
 ## Conventions
 
