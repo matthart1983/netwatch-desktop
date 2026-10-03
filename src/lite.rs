@@ -200,45 +200,55 @@ impl Lite {
                         ui_kit::chip(ui, "⏸ paused", theme::raised());
                         ui.add_space(6.0);
                     }
-                    // Toasts (a text-size change, an export) take the
-                    // status line's place while they show.
-                    if let Some(toast) = cx.toast.as_ref().filter(|t| t.fresh()) {
-                        ui.add(
-                            egui::Label::new(ui_kit::mono(
-                                &toast.text,
-                                theme::LABEL,
-                                if toast.ok {
-                                    theme::good()
-                                } else {
-                                    theme::error()
-                                },
-                            ))
-                            .truncate(),
-                        );
-                        return;
-                    }
-                    match crate::shell::issue_strip(s) {
-                        Some(strip) => {
-                            let sentence = s
-                                .issues
+                    // A toast (a text-size change, an export) takes the
+                    // sentence's place while it shows; the severity word and
+                    // colour stay.
+                    let strip = crate::shell::issue_strip(s);
+                    let (sentence, color) = match (cx.toast.as_ref().filter(|t| t.fresh()), &strip)
+                    {
+                        (Some(toast), _) => (
+                            toast.text.clone(),
+                            if toast.ok {
+                                theme::good()
+                            } else {
+                                theme::error()
+                            },
+                        ),
+                        (None, Some(_)) => (
+                            s.issues
                                 .iter()
                                 .max_by_key(|i| i.severity)
                                 .map(|i| i.title.clone())
-                                .unwrap_or_default();
-                            ui.add(
-                                egui::Label::new(ui_kit::mono(
-                                    sentence,
-                                    theme::LABEL,
-                                    theme::text2(),
-                                ))
+                                .unwrap_or_default(),
+                            theme::text2(),
+                        ),
+                        (None, None) => ("no open issues".into(), theme::muted()),
+                    };
+                    // The sentence truncates first, so the word and colour
+                    // beside it always fit.
+                    let beside = match &strip {
+                        Some(strip) => {
+                            ui_kit::text_width(ui, &strip.word, theme::semibold(theme::LABEL)) + 3.0
+                        }
+                        None => 8.0,
+                    } + 2.0 * ui.spacing().item_spacing.x;
+                    let room = vec2(
+                        (ui.available_width() - beside).max(0.0),
+                        ui.available_height(),
+                    );
+                    ui.allocate_ui(room, |ui| {
+                        ui.add(
+                            egui::Label::new(ui_kit::mono(sentence, theme::LABEL, color))
                                 .truncate(),
-                            );
+                        );
+                    });
+                    match strip {
+                        Some(strip) => {
                             ui.label(ui_kit::strong(&strip.word, theme::LABEL, strip.color));
                             let (rail, _) = ui.allocate_exact_size(vec2(3.0, 14.0), Sense::hover());
                             ui.painter().rect_filled(rail, 1.0, strip.color);
                         }
                         None => {
-                            ui.label(ui_kit::mono("no open issues", theme::LABEL, theme::muted()));
                             let (dot, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
                             ui.painter().circle_filled(
                                 dot.center(),
@@ -855,6 +865,19 @@ mod tests {
     }
 
     fn render(lite: &mut Lite, s: &Snapshot, h: &mut H) -> Vec<String> {
+        render_at(lite, s, h, vec2(626.0, 365.0))
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect()
+    }
+
+    /// Every text shape and where it lands, in a window of `size` pt.
+    fn render_at(
+        lite: &mut Lite,
+        s: &Snapshot,
+        h: &mut H,
+        size: egui::Vec2,
+    ) -> Vec<(String, Rect)> {
         let ctx = egui::Context::default();
         theme::install_fonts(&ctx);
         theme::apply(&ctx);
@@ -862,7 +885,7 @@ mod tests {
         for _ in 0..12 {
             let out = ctx.run(
                 egui::RawInput {
-                    screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(626.0, 365.0))),
+                    screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), size)),
                     ..Default::default()
                 },
                 |ctx| {
@@ -875,12 +898,57 @@ mod tests {
                 .shapes
                 .iter()
                 .filter_map(|c| match &c.shape {
-                    egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    egui::Shape::Text(t) => Some((
+                        t.galley.text().to_string(),
+                        t.galley.rect.translate(t.pos.to_vec2()),
+                    )),
                     _ => None,
                 })
                 .collect();
         }
         texts
+    }
+
+    #[test]
+    fn a_toast_takes_the_sentence_and_leaves_the_severity_word() {
+        let mut s = Snapshot::empty();
+        s.interface = "wlp192s0".into();
+        s.issues = vec![crate::screens::connections::tests::issue(
+            "dns.slow_resolver",
+            netwatch::diagnose::issue::Subject::Resolver {
+                addr: "192.0.2.53".into(),
+            },
+        )];
+        let strip = crate::shell::issue_strip(&s).unwrap();
+        let title = s.issues[0].title.clone();
+        let mut h = H::new();
+        let texts = render(&mut Lite::default(), &s, &mut h);
+        assert!(
+            texts.contains(&title) && texts.contains(&strip.word),
+            "{texts:?}"
+        );
+        for toast in [
+            Toast::ok(crate::zoom::toast(1.5)),
+            Toast::err("desktop.toml is not valid TOML · layout reset"),
+        ] {
+            // Lite's smallest window, 720×420 px, at 115%, 150% and 200%.
+            for size in [vec2(626.0, 365.0), vec2(480.0, 280.0), vec2(360.0, 210.0)] {
+                h.toast = Some(toast.clone());
+                let shown = render_at(&mut Lite::default(), &s, &mut h, size);
+                let at = |want: &str| shown.iter().find(|(t, _)| t == want).map(|(_, r)| *r);
+                assert!(at(&toast.text).is_some(), "{size:?}: {shown:?}");
+                assert!(
+                    at(&title).is_none(),
+                    "{size:?}: the toast replaces the sentence"
+                );
+                let word = at(&strip.word).expect("the severity word stays");
+                let iface = at("lite · wlp192s0").unwrap();
+                assert!(
+                    word.left() > iface.right(),
+                    "{size:?}: the word {word:?} stays clear of {iface:?}"
+                );
+            }
+        }
     }
 
     #[test]
