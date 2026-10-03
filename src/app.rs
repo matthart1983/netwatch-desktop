@@ -1890,7 +1890,10 @@ impl DesktopApp {
             ui_kit::section(ui, "views");
         }
         // The list scrolls when the window is too short for all ten (300%
-        // on a 768-pixel screen), so every tab stays reachable by mouse.
+        // on a 768-pixel screen), so every tab stays reachable by mouse,
+        // and its bar stays drawn so the tabs below are not a secret.
+        let scroll_style = ui.spacing().scroll;
+        ui.spacing_mut().scroll = theme::shown_scroll_bars();
         egui::ScrollArea::vertical()
             .id_source("navigator_views")
             .show(ui, |ui| {
@@ -1909,6 +1912,7 @@ impl DesktopApp {
                     }
                 }
             });
+        ui.spacing_mut().scroll = scroll_style;
         if mode != NavMode::Full {
             return;
         }
@@ -2235,8 +2239,9 @@ fn nav_item(
     badge: Option<&(String, egui::Color32)>,
     mode: NavMode,
 ) -> egui::Response {
+    // The width left beside the scroll bar, when the list has one.
     let size = match mode {
-        NavMode::Rail => vec2(32.0, 26.0),
+        NavMode::Rail => vec2(ui.available_width(), 26.0),
         NavMode::Full | NavMode::Narrow => vec2(ui.available_width(), 22.0),
     };
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());

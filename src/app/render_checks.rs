@@ -208,6 +208,69 @@ fn overlaps(texts: &[Seen]) -> Vec<String> {
     found
 }
 
+/// Every filled rectangle in `out` that shows inside `area`, with its fill.
+fn fills(out: &egui::FullOutput, area: Rect) -> Vec<(Rect, egui::Color32)> {
+    fn walk(shape: &egui::Shape, clip: Rect, area: Rect, found: &mut Vec<(Rect, egui::Color32)>) {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, clip, area, found)),
+            egui::Shape::Rect(r) if r.fill.a() > 0 => {
+                let shown = r.rect.intersect(clip);
+                if shown.is_positive() && area.contains_rect(shown) {
+                    found.push((shown, r.fill));
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    for clipped in &out.shapes {
+        walk(&clipped.shape, clipped.clip_rect, area, &mut found);
+    }
+    found
+}
+
+/// WCAG contrast of `fill` (premultiplied, as egui paints it) laid over
+/// the opaque `ground`.
+fn contrast(fill: egui::Color32, ground: egui::Color32) -> f32 {
+    let alpha = fill.a() as f32 / 255.0;
+    let over = |f: u8, g: u8| (f as f32 + g as f32 * (1.0 - alpha)).min(255.0) / 255.0;
+    let luminance = |r: f32, g: f32, b: f32| {
+        let linear = |c: f32| {
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+    };
+    let a = luminance(
+        over(fill.r(), ground.r()),
+        over(fill.g(), ground.g()),
+        over(fill.b(), ground.b()),
+    );
+    let b = luminance(
+        ground.r() as f32 / 255.0,
+        ground.g() as f32 / 255.0,
+        ground.b() as f32 / 255.0,
+    );
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+/// Scroll bar handles a viewer can see in `area`: bars at least 3 pt thick
+/// and three times as long, standing out 3:1 from their track.
+fn scroll_handles(ctx: &egui::Context, out: &egui::FullOutput, area: Rect) -> Vec<Rect> {
+    let track = ctx.style().visuals.extreme_bg_color;
+    fills(out, area)
+        .into_iter()
+        .filter(|(r, fill)| {
+            let (thin, long) = (r.width().min(r.height()), r.width().max(r.height()));
+            thin >= 3.0 && long >= 3.0 * thin && contrast(*fill, track) >= 3.0
+        })
+        .map(|(r, _)| r)
+        .collect()
+}
+
 fn full_view(tab: Tab) -> DesktopApp {
     DesktopApp::new(Backend::preview(), tab)
 }
@@ -322,6 +385,43 @@ fn every_tab_is_reachable_by_mouse_at_300_percent_on_1366x768() {
     }
 }
 
+/// The rail at 300% on a 768-pixel screen has room for half the tabs. With
+/// the pointer away from it, its scroll bar still says there are more.
+#[test]
+fn a_rail_too_short_for_every_tab_keeps_its_scroll_bar_drawn() {
+    let mut window = Window::new(1366.0, 768.0, 3.0);
+    let mut app = full_view(Tab::Dashboard);
+    window.settle(&mut app);
+    window.frame(&mut app, vec![Event::PointerMoved(window.screen.center())]);
+    let out = window.settle(&mut app);
+    let rail = Rect::from_min_max(
+        window.screen.min,
+        pos2(theme::RAIL_WIDTH, window.screen.bottom()),
+    );
+    let texts = seen(&out, window.screen);
+    let on_rail = |key: &str| {
+        texts
+            .iter()
+            .any(|t| t.text == key && t.whole && rail.contains_rect(t.rect))
+    };
+    assert!(on_rail("1") && !on_rail("0"), "0 starts out of view");
+    let bars = scroll_handles(&window.ctx, &out, rail);
+    assert!(
+        bars.iter().any(|b| b.height() > b.width()),
+        "nothing on the rail says there are more tabs: {:?}",
+        fills(&out, rail)
+    );
+    // Where every name fits there is no bar: it only ever means "more".
+    let mut window = Window::new(1920.0, 1080.0, 3.0);
+    let mut app = full_view(Tab::Dashboard);
+    let out = window.settle(&mut app);
+    let navigator = Rect::from_min_max(
+        window.screen.min,
+        pos2(theme::NAV_NARROW_WIDTH, window.screen.bottom()),
+    );
+    assert_eq!(scroll_handles(&window.ctx, &out, navigator), []);
+}
+
 #[test]
 fn a_tab_chosen_by_key_scrolls_into_a_short_rail() {
     let mut window = Window::new(1366.0, 768.0, 3.0);
@@ -410,7 +510,8 @@ fn no_text_overlaps_up_to_200_percent_on_1440x900_and_larger() {
 }
 
 /// 200% on a 1366×768 laptop leaves connections too narrow for its
-/// options on one line and for its fewest columns.
+/// options on one line and for its fewest columns. A scroll bar under the
+/// table shows the cut, and shift + wheel or a click on the bar reaches it.
 #[test]
 fn connections_options_wrap_and_its_columns_scroll_sideways() {
     let mut window = Window::new(1366.0, 768.0, 2.0);
@@ -452,20 +553,46 @@ fn connections_options_wrap_and_its_columns_scroll_sideways() {
         .expect("the remote column's header")
         .rect;
     assert!(table.top() > header.bottom());
-    window.frame(
-        &mut app,
-        vec![
-            Event::PointerMoved(table.center()),
-            Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Point,
-                delta: vec2(-600.0, 0.0),
-                modifiers: Default::default(),
-            },
-        ],
+    // With the pointer on the navigator, a bar under the table is drawn.
+    window.frame(&mut app, vec![Event::PointerMoved(pos2(20.0, table.top()))]);
+    let out = window.settle(&mut app);
+    let below = Rect::from_min_max(pos2(theme::NAV_NARROW_WIDTH, table.bottom()), screen.max);
+    let bar = scroll_handles(&window.ctx, &out, below)
+        .into_iter()
+        .find(|b| b.width() > b.height())
+        .unwrap_or_else(|| panic!("no bar under the table: {:?}", fills(&out, below)));
+    // A vertical wheel with shift held: how a plain mouse scrolls sideways.
+    let mut wheel = |app: &mut DesktopApp, dy: f32| {
+        window.frame(
+            app,
+            vec![
+                Event::PointerMoved(table.center()),
+                Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: vec2(0.0, dy),
+                    modifiers: egui::Modifiers::SHIFT,
+                },
+            ],
+        );
+        window.settle(app)
+    };
+    let out = wheel(&mut app, -600.0);
+    assert!(
+        verdict(&out).is_some_and(|t| t.whole),
+        "shift + wheel brings the verdict column into view"
     );
+    let out = wheel(&mut app, 600.0);
+    assert!(verdict(&out).is_none_or(|t| !t.whole), "and back");
+    // No shift needed: a click at the bar's far end goes there.
+    let track = fills(&out, below)
+        .into_iter()
+        .map(|(r, _)| r)
+        .filter(|r| r.contains_rect(bar) && r.width() > bar.width())
+        .fold(bar, |a, r| a.union(r));
+    window.click(&mut app, pos2(track.right() - 2.0, track.center().y));
     let out = window.settle(&mut app);
     assert!(
         verdict(&out).is_some_and(|t| t.whole),
-        "scrolled sideways, the verdict column shows"
+        "clicking the bar's end brings the verdict column into view"
     );
 }

@@ -252,6 +252,23 @@ pub const DATA: f32 = 12.0;
 pub const LABEL: f32 = 11.0;
 pub const META: f32 = 10.0;
 
+/// Scroll bars for a list that hides part of itself, such as the
+/// navigator's tabs or a table's last columns. egui's default bar shows only
+/// under the pointer, so nothing says there is more; this one is drawn
+/// whenever there is: a 4 pt handle in the text colour at 60%, on a track
+/// in a lane of its own, widening under the pointer.
+pub fn shown_scroll_bars() -> egui::style::ScrollStyle {
+    egui::style::ScrollStyle {
+        floating_width: 4.0,
+        floating_allocated_width: 6.0,
+        dormant_background_opacity: 1.0,
+        active_background_opacity: 1.0,
+        dormant_handle_opacity: 0.6,
+        active_handle_opacity: 0.8,
+        ..egui::style::ScrollStyle::floating()
+    }
+}
+
 pub const SEMIBOLD: &str = "plex-mono-semibold";
 pub const SANS: &str = "plex-sans";
 

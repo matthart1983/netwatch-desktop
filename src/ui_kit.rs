@@ -707,7 +707,8 @@ impl<'a> Table<'a> {
     /// `cell(row, column)` builds each visible cell. `row_style(row)` may
     /// return a full-width group header text instead of cells. Narrower
     /// than every column's minimum, the table scrolls sideways rather than
-    /// cut its last columns off.
+    /// cut its last columns off, under a scroll bar that stays drawn so the
+    /// cut is visible (shift + wheel, or drag or click the bar).
     pub fn show(
         self,
         ui: &mut Ui,
@@ -718,13 +719,19 @@ impl<'a> Table<'a> {
         if needed <= ui.available_width() + 0.5 {
             return self.show_columns(ui, cell, group);
         }
-        egui::ScrollArea::horizontal()
+        let scroll_style = ui.spacing().scroll;
+        ui.spacing_mut().scroll = theme::shown_scroll_bars();
+        let out = egui::ScrollArea::horizontal()
             .id_source((self.id, "columns"))
             .show(ui, |ui| {
+                // The rows' own scroll bar keeps the usual style.
+                ui.spacing_mut().scroll = scroll_style;
                 ui.set_width(needed);
                 self.show_columns(ui, cell, group)
             })
-            .inner
+            .inner;
+        ui.spacing_mut().scroll = scroll_style;
+        out
     }
 
     fn show_columns(

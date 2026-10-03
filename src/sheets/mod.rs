@@ -364,6 +364,10 @@ impl Help {
             "right-click".into(),
             "a row's actions, the same as its inspector".into(),
         ));
+        global.push((
+            "shift + wheel".into(),
+            "scroll a table sideways when its columns don't fit".into(),
+        ));
         Self {
             view: "full view",
             global,
@@ -534,6 +538,14 @@ mod tests {
             assert_eq!(keys, "ctrl + / ctrl −");
             assert!(label.starts_with("text size · ctrl 0 reset"));
         }
+    }
+    #[test]
+    fn full_help_says_how_to_scroll_a_table_sideways() {
+        let help = Help::full(Tab::Connections, Vec::new());
+        assert!(help
+            .global
+            .iter()
+            .any(|(k, l)| k == "shift + wheel" && l.contains("sideways")));
     }
     #[test]
     fn palette_prefixes_narrow_groups_and_fuzzy_ranks_substrings_first() {
