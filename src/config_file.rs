@@ -10,9 +10,9 @@
 //! defaults, so a save then replaced everything in it.
 //!
 //! [`save`] edits the file instead. It writes only the keys whose values
-//! changed between the config this session loaded and the one being saved,
-//! and leaves every other line, comment and unknown table as it was. A file
-//! netwatch could not read is refused rather than overwritten.
+//! changed since this session last read or wrote the file, and leaves every
+//! other line, comment and unknown table as it was. A file netwatch could
+//! not read is refused rather than overwritten.
 use netwatch::config::NetwatchConfig;
 use std::fs;
 use std::io::Write;
@@ -20,8 +20,8 @@ use std::path::Path;
 use toml_edit::{DocumentMut, Item, TableLike};
 
 /// Save `new` to `path`, writing only what differs from `old`, the config
-/// this session started from. A missing file is written whole, as netwatch
-/// writes it.
+/// as this session last read or wrote the file. A missing file is written
+/// whole, as netwatch writes it.
 pub fn save(path: &Path, old: &NetwatchConfig, new: &NetwatchConfig) -> Result<(), String> {
     let before = match fs::read_to_string(path) {
         Ok(text) => Some(text),

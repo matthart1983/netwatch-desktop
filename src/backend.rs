@@ -723,10 +723,13 @@ impl Backend {
             let mut tracker = crate::telemetry::Tracker::default();
             let mut action: Option<ActionResult> = None;
             let mut seq = 0;
+            // config.toml as last read or written, which the next save
+            // diffs against (`save_config`).
+            let mut saved = app.user_config.clone();
             loop {
                 for command in pending.try_iter() {
                     seq += 1;
-                    let outcome = run_command(&mut app, command);
+                    let outcome = run_command(&mut app, &mut saved, command);
                     action = Some(ActionResult {
                         seq,
                         ok: outcome.is_ok(),
@@ -895,7 +898,12 @@ fn reload_policy(app: &mut App, path: &std::path::Path) -> bool {
     app.egress_profiler.has_policy()
 }
 
-fn run_command(app: &mut App, command: Command) -> Result<String, String> {
+/// `saved` is config.toml as this session last read or wrote it.
+fn run_command(
+    app: &mut App,
+    saved: &mut NetwatchConfig,
+    command: Command,
+) -> Result<String, String> {
     match command {
         Command::ToggleRecorder => {
             if app.incident_recorder.is_armed() {
@@ -1063,7 +1071,7 @@ fn run_command(app: &mut App, command: Command) -> Result<String, String> {
             let mut config = *config;
             config.validate();
             let ai_changed = ai_settings_changed(&app.user_config, &config);
-            let old = std::mem::replace(&mut app.user_config, config);
+            app.user_config = config;
             // Like the TUI: a changed AI row replaces the running collector,
             // so turning insights off stops summaries leaving the machine and
             // a new endpoint or model takes effect without a restart.
@@ -1074,15 +1082,26 @@ fn run_command(app: &mut App, command: Command) -> Result<String, String> {
             app.ui.packet_follow = app.user_config.packet_follow;
             app.ui.timeline_window = app.user_config.timeline_window_enum();
             app.theme = netwatch::theme::by_name(&app.user_config.theme);
-            // Only what changed is written, so the TUI's sections, keys a
-            // newer netwatch added and comments survive (`config_file`).
-            let path = NetwatchConfig::path()
-                .ok_or_else(|| "✕ save failed · cannot determine config directory".to_string())?;
-            crate::config_file::save(&path, &old, &app.user_config)
-                .map(|()| format!("✓ saved {}", path.display()))
-                .map_err(|e| format!("✕ save failed · {e}"))
+            save_config(saved, NetwatchConfig::path(), &app.user_config)
         }
     }
+}
+
+/// Write `config` to `path`. Only what changed since `saved` is written, so
+/// the TUI's sections, keys a newer netwatch added and comments survive
+/// (`config_file`). `saved` moves on only when the write succeeds: after a
+/// refused or failed save the file still holds the old values, and a retry
+/// must write the same changes again rather than find nothing to do.
+fn save_config(
+    saved: &mut NetwatchConfig,
+    path: Option<PathBuf>,
+    config: &NetwatchConfig,
+) -> Result<String, String> {
+    let path =
+        path.ok_or_else(|| "✕ save failed · cannot determine config directory".to_string())?;
+    crate::config_file::save(&path, saved, config).map_err(|e| format!("✕ save failed · {e}"))?;
+    *saved = config.clone();
+    Ok(format!("✓ saved {}", path.display()))
 }
 
 fn ai_settings_changed(old: &NetwatchConfig, new: &NetwatchConfig) -> bool {
@@ -1351,6 +1370,35 @@ pub(crate) mod tests {
         assert!(!ai_settings_changed(&old, &unrelated));
         assert!(insights_collector_for(&off).is_none());
         assert!(insights_collector_for(&moved).is_some());
+    }
+    #[test]
+    fn a_save_refused_until_the_file_is_fixed_is_written_on_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let read = || std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, "theme = \"dark\"\n[alerts\n").unwrap();
+        let mut saved = NetwatchConfig::default();
+        let nord = NetwatchConfig {
+            theme: "nord".into(),
+            ..saved.clone()
+        };
+        let refused = save_config(&mut saved, Some(path.clone()), &nord).unwrap_err();
+        assert!(refused.contains("fix it before saving"), "{refused}");
+        assert_eq!(read(), "theme = \"dark\"\n[alerts\n");
+
+        // The settings sheet's S again, once the typo is fixed: the same
+        // config, which the file still lacks.
+        std::fs::write(&path, "theme = \"dark\"\n").unwrap();
+        let ok = save_config(&mut saved, Some(path.clone()), &nord).unwrap();
+        assert_eq!(ok, format!("✓ saved {}", path.display()));
+        assert_eq!(read(), "theme = \"nord\"\n");
+        assert_eq!(saved.theme, "nord");
+
+        let nowhere = save_config(&mut saved, None, &nord).unwrap_err();
+        assert!(
+            nowhere.contains("cannot determine config directory"),
+            "{nowhere}"
+        );
     }
     #[cfg(unix)]
     #[test]
