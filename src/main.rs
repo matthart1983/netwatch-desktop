@@ -44,7 +44,8 @@ usage: netwatch-desktop [options]
   --check-runtime        start the runtime, print what it sees, exit
   --screenshot <png>     render once, save a PNG, exit (no prefs read or written)
   --sheet <name>         open a sheet: settings, recorder, firstrun, palette, help
-  --zoom 1-4             dense view: zoom a box
+  --text-size <percent>  text size for this launch, 100-300 (default 115)
+  --dense-box 1-4        dense view: open with one box zoomed
   --graph-preview        synthetic snapshot, no collectors
   --ephemeral            don't read or write saved layout
   -h, --help             this help
@@ -59,6 +60,9 @@ const VALUE_FLAGS: &[&str] = &[
     "--window-size",
     "--screenshot",
     "--sheet",
+    "--text-size",
+    "--dense-box",
+    // Deprecated alias for --dense-box.
     "--zoom",
 ];
 const BARE_FLAGS: &[&str] = &[
@@ -76,6 +80,15 @@ const BARE_FLAGS: &[&str] = &[
     "--version",
 ];
 
+/// `--dense-box N`: dense box 1-4.
+fn dense_box(value: &str) -> Option<crate::dense::Panel> {
+    value
+        .parse::<usize>()
+        .ok()
+        .and_then(|i| i.checked_sub(1))
+        .and_then(|i| crate::dense::Panel::ALL.get(i).copied())
+}
+
 /// Unknown flags, a value flag with no value, or a bad value, as a message.
 fn validate(args: &[String]) -> Result<(), String> {
     let mut i = 1;
@@ -88,6 +101,8 @@ fn validate(args: &[String]) -> Result<(), String> {
             let ok = match a {
                 "--tab" => Tab::from_name(value).is_some(),
                 "--view" => ["full", "lite", "dense"].contains(&value.as_str()),
+                "--text-size" => zoom::parse_percent(value).is_some(),
+                "--dense-box" | "--zoom" => dense_box(value).is_some(),
                 _ => true,
             };
             if !ok {
@@ -120,6 +135,12 @@ fn main() -> eframe::Result<()> {
     if let Err(e) = validate(&args) {
         eprintln!("netwatch-desktop: {e}\n\n{USAGE}");
         std::process::exit(2);
+    }
+    if flag("--zoom") {
+        eprintln!(
+            "netwatch-desktop: --zoom is deprecated; use --dense-box N to zoom a dense box, \
+             or --text-size PERCENT for text size"
+        );
     }
     let sandbox = if flag("--no-sandbox") {
         Some(netwatch::sandbox::Mode::Disabled)
@@ -184,12 +205,10 @@ fn main() -> eframe::Result<()> {
         .or(flag("--lite").then_some(app::View::Lite));
     let dense = view == Some(app::View::Dense) || (view.is_none() && prefs.view == "dense");
     let lite = view == Some(app::View::Lite) || (view.is_none() && prefs.view == "lite");
-    let zoom = arg(&args, "--zoom").and_then(|z| {
-        z.parse::<usize>()
-            .ok()
-            .and_then(|i| i.checked_sub(1))
-            .and_then(|i| crate::dense::Panel::ALL.get(i).copied())
-    });
+    let dense_panel = arg(&args, "--dense-box")
+        .or_else(|| arg(&args, "--zoom"))
+        .and_then(|n| dense_box(&n));
+    let text_size = arg(&args, "--text-size").and_then(|t| zoom::parse_percent(&t));
     let minimum = if dense {
         [1100.0, 680.0]
     } else if lite {
@@ -253,12 +272,13 @@ fn main() -> eframe::Result<()> {
                     ephemeral,
                     system_decorations: !app_chrome,
                     demo,
+                    text_size,
                     notice: prefs_note,
                 },
                 prefs,
             );
             theme::apply(&cc.egui_ctx);
-            if let Some(panel) = zoom {
+            if let Some(panel) = dense_panel {
                 app.zoom_dense(panel);
             }
             if let Some(sheet) = sheet {
@@ -287,5 +307,21 @@ mod tests {
         assert!(validate(&args("--view wide")).is_err());
         assert!(validate(&args("--tab")).is_err());
         assert!(validate(&args("--no-sandbox --sandbox-strict")).is_err());
+    }
+    #[test]
+    fn text_size_and_dense_box_values_are_checked() {
+        assert!(validate(&args("--text-size 150")).is_ok());
+        assert!(validate(&args("--text-size 300%")).is_ok());
+        assert!(validate(&args("--text-size 50")).is_err());
+        assert!(validate(&args("--text-size 400")).is_err());
+        assert!(validate(&args("--text-size big")).is_err());
+        assert!(validate(&args("--text-size")).is_err());
+        assert!(validate(&args("--view dense --dense-box 4")).is_ok());
+        assert!(validate(&args("--dense-box 5")).is_err());
+        assert!(validate(&args("--dense-box 0")).is_err());
+        // The old name still works, with a warning at launch.
+        assert!(validate(&args("--zoom 2")).is_ok());
+        assert!(validate(&args("--zoom 1.5")).is_err());
+        assert_eq!(super::dense_box("4"), Some(crate::dense::Panel::ALL[3]));
     }
 }

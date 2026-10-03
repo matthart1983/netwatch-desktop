@@ -55,6 +55,13 @@ pub fn label(zoom: f32) -> String {
     format!("{}%", percent(zoom))
 }
 
+/// `--text-size 150` (or `150%`) as a zoom; `None` outside 100–300.
+pub fn parse_percent(text: &str) -> Option<f32> {
+    let n: f32 = text.trim().trim_end_matches('%').trim().parse().ok()?;
+    let zoom = n / 100.0;
+    (MIN..=MAX).contains(&zoom).then_some(zoom)
+}
+
 /// A text-size request from any control.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Change {
@@ -270,6 +277,18 @@ mod tests {
         assert_eq!(key_change(Key::Num0, Modifiers::NONE), None);
         assert_eq!(key_change(Key::Minus, ctrl | Modifiers::ALT), None);
         assert_eq!(key_change(Key::K, ctrl), None);
+    }
+
+    #[test]
+    fn percent_flag_parses_in_range_only() {
+        assert_eq!(parse_percent("150"), Some(1.5));
+        assert_eq!(parse_percent("200%"), Some(2.0));
+        assert_eq!(parse_percent(" 100 "), Some(1.0));
+        assert_eq!(parse_percent("300"), Some(3.0));
+        assert_eq!(parse_percent("99"), None);
+        assert_eq!(parse_percent("301"), None);
+        assert_eq!(parse_percent("NaN"), None);
+        assert_eq!(parse_percent("big"), None);
     }
 
     #[test]

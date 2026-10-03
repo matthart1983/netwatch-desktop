@@ -63,6 +63,8 @@ pub struct Options {
     pub system_decorations: bool,
     /// How the session was started, so a failed start can be retried.
     pub demo: bool,
+    /// `--text-size`: this launch's text size, not saved unless changed.
+    pub text_size: Option<f32>,
     /// Shown as a toast at launch: why saved layout was reset.
     pub notice: Option<String>,
 }
@@ -75,6 +77,7 @@ impl Default for Options {
             demo: false,
             ephemeral: true,
             system_decorations: true,
+            text_size: None,
             notice: None,
         }
     }
@@ -197,7 +200,7 @@ impl DesktopApp {
             sheet: None,
             toast: options.notice.map(Toast::err),
             last_action: 0,
-            zoom: zoom::sanitize(prefs.zoom),
+            zoom: zoom::sanitize(options.text_size.unwrap_or(prefs.zoom)),
             zoom_gesture: zoom::Gesture::default(),
             prefs,
             prefs_path: Prefs::path(),
@@ -685,7 +688,7 @@ impl DesktopApp {
         self.toast = Some(Toast::ok(format!("theme {}", next.name)));
     }
 
-    /// First frame: the saved text size, the app's own
+    /// First frame: the saved or `--text-size` text size, the app's own
     /// zoom keys in place of egui's, and lite's on-top level.
     fn start(&mut self, ctx: &egui::Context) {
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
@@ -2912,6 +2915,25 @@ mod tests {
         });
         let _ = ctx.run(Default::default(), |_| {});
         assert_eq!((ctx.zoom_factor(), app.prefs.zoom), (2.5, 2.5));
+    }
+    #[test]
+    fn text_size_flag_is_for_this_launch_only() {
+        let mut app = DesktopApp::with_options(
+            Backend::preview(),
+            Options {
+                text_size: Some(2.0),
+                ..Default::default()
+            },
+            Prefs::default(),
+        );
+        let mut f = Frames::new();
+        f.launch(&mut app);
+        assert_eq!(f.ctx.zoom_factor(), 2.0);
+        assert_eq!(app.prefs.zoom, 1.15, "the saved size is untouched");
+        assert!(!app.prefs_dirty);
+        // Changing it in the app saves the new size as usual.
+        f.key(&mut app, egui::Key::Plus);
+        assert_eq!((f.ctx.zoom_factor(), app.prefs.zoom), (2.5, 2.5));
     }
     #[test]
     fn toasts_fade_in_every_view() {

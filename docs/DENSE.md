@@ -33,7 +33,7 @@ cargo clippy --offline --all-targets -- -D warnings
 cargo build --release --offline
 cargo test --offline dense::tests::dense_frame_cost_and_capacity_cache -- --ignored --nocapture
 ./target/debug/netwatch-desktop --graph-preview --view dense --window-size 1280x760 --screenshot /tmp/dense.png
-./target/debug/netwatch-desktop --graph-preview --view dense --zoom 4 --screenshot /tmp/dense-connections.png
+./target/debug/netwatch-desktop --graph-preview --view dense --dense-box 4 --screenshot /tmp/dense-connections.png
 ```
 
 The explicit debug performance check measured 1.87 ms median / 2.23 ms p95 for egui UI plus tessellation at 1440×900, with one NET capacity bake across 260 frames. The standalone graph check measured 0.195 ms median / 0.261 ms p95 with one capacity bake across 660 frames. These are CPU timings, not a GPU frame-rate guarantee. Native screenshots are checked separately at minimum/default sizes and in each panel zoom. Screenshot runs avoid activation and ignore shortcuts so incidental keyboard input cannot change the requested view.

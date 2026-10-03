@@ -85,7 +85,8 @@ Useful flags:
 | `--tab <name>` | Opens on a tab: `dashboard`, `connections`, `interfaces`, `packets`, `stats`, `topology`, `timeline`, `processes`, `diagnose`, `egress`. |
 | `--view full\|lite\|dense` | Starts in a view. `--lite` is short for `--view lite`. |
 | `--no-sandbox` / `--sandbox-strict` | Overrides config.toml's `sandbox` for this launch, as in the TUI. |
-| `--zoom 1-4` | In dense view, opens with one box zoomed. |
+| `--text-size <percent>` | Text size for this launch only, 100 to 300 (for example `--text-size 150`). The saved size is unchanged unless you change it in the app. |
+| `--dense-box 1-4` | In dense view, opens with one box zoomed. `--zoom` still works but is deprecated. |
 | `--sheet <name>` | Opens a sheet: `settings`, `recorder`, `firstrun`, `palette`, `help`. |
 | `--theme <name>` | Starts with a palette (see [themes](#themes-and-graphs)). |
 | `--window-size WxH` | Sets the initial window size in logical pixels. |
@@ -166,7 +167,7 @@ Global keys work on every tab unless a sheet is open.
 
 ### Text size
 
-Text size scales the whole interface, from 100% to 300%, and is shared by all three views. Change it from the `☰` menu (`−`, `+`, `reset` and a list of sizes), the command palette (type "text size"), the "this app" group in settings, lite's own `☰`, the picker at the top of the first-run sheet, or the keys above. Every change applies at once, says the new size, and is saved in `desktop.toml`.
+Text size scales the whole interface, from 100% to 300%, and is shared by all three views. Change it from the `☰` menu (`−`, `+`, `reset` and a list of sizes), the command palette (type "text size"), the "this app" group in settings, lite's own `☰`, the picker at the top of the first-run sheet, or the keys above. Every change applies at once, says the new size, and is saved in `desktop.toml`. `--text-size` sets it for one launch.
 
 ## The ten tabs
 
