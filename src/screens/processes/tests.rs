@@ -229,3 +229,44 @@ fn renders_empty_and_populated() {
     render(&mut screen, &mock, None);
     assert_eq!(screen.selected, Some(("node".into(), Some(1188))));
 }
+
+#[test]
+fn policy_state_counts_blocked_destinations() {
+    use netwatch::collectors::egress::{EgressPolicy, ProcessRule, Verdict};
+    let mut s = Snapshot::empty();
+    let e = std::sync::Arc::make_mut(&mut s.egress);
+    e.policy = Some(EgressPolicy {
+        process: [(
+            "curl".to_string(),
+            ProcessRule {
+                allow_sni: vec!["api.github.com".into()],
+                ..Default::default()
+            },
+        )]
+        .into(),
+        ..Default::default()
+    });
+    let blocked = || Verdict::Blocked("port 25 is blocked".into());
+    e.verdicts
+        .insert(("curl".into(), "smtp.example".into(), 25), blocked());
+    e.verdicts
+        .insert(("curl".into(), "new.example".into(), 443), Verdict::Drift);
+    e.verdicts
+        .insert(("mailer".into(), "smtp.example".into(), 25), blocked());
+    assert_eq!(
+        policy_state(&s, "curl"),
+        (
+            "ruled · 1 · 1 drift · 1 blocked".to_string(),
+            theme::error()
+        )
+    );
+    // The block list applies to processes with no rule as well.
+    assert_eq!(
+        policy_state(&s, "mailer"),
+        ("no rule · 1 blocked".to_string(), theme::error())
+    );
+    assert_eq!(
+        policy_state(&s, "firefox"),
+        ("no rule".to_string(), theme::text())
+    );
+}

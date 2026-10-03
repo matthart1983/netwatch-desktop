@@ -165,3 +165,61 @@ fn refuses_unsafe_modes_and_symlinks_without_changing_them() {
         .unwrap_err()
         .contains("symbolic link"));
 }
+
+#[test]
+fn edits_keep_the_block_lists_and_alert_mode() {
+    use netwatch::collectors::egress::AlertMode;
+    let original = "alert = \"all\"\n\n[block]\nsni = [\"*.evil.example\"]\nports = [25]\n\n[process.curl]\nallow_ip = [\"10.0.0.1\"]\nallow_ports = [443]\n\n[process.curl.block]\nip = [\"198.51.100.0/24\"]\n\n[process.other]\nallow_sni = [\"example.org\"]\n";
+    let (_dir, path) = source(original);
+    let promote = PolicyFile::read(&path)
+        .unwrap()
+        .merge(
+            &[("curl".into(), rule("10.0.0.2", &[443]))],
+            "promote".into(),
+        )
+        .unwrap();
+    let removal = PolicyFile::read(&path).unwrap().remove("other").unwrap();
+    for edit in [&promote, &removal] {
+        let policy = edit.policy();
+        assert_eq!(policy.alert, AlertMode::All);
+        assert_eq!(policy.block.sni, ["*.evil.example"]);
+        assert_eq!(policy.block.ports, [25]);
+        assert_eq!(policy.process["curl"].block.ip, ["198.51.100.0/24"]);
+        let diff = edit.diff();
+        let removed: Vec<&str> = diff
+            .lines()
+            .filter(|l| l.starts_with('-') && !l.starts_with("---"))
+            .filter(|l| {
+                ["block", "evil", "alert", "198.51", "ports = [25]"]
+                    .iter()
+                    .any(|k| l.contains(k))
+            })
+            .collect();
+        assert!(removed.is_empty(), "{diff}");
+    }
+    assert_eq!(
+        promote.policy().process["curl"].allow_ip,
+        ["10.0.0.1", "10.0.0.2"]
+    );
+    // A rule with no block table goes with no block warning.
+    assert_eq!(removal.warnings.len(), 1, "{:?}", removal.warnings);
+}
+
+#[test]
+fn removing_a_rule_names_the_block_list_that_goes_with_it() {
+    use netwatch::collectors::egress::AlertMode;
+    let original = "alert = \"all\"\n\n[block]\nports = [25]\n\n[process.curl]\nallow_ip = [\"10.0.0.1\"]\n\n[process.curl.block]\nip = [\"198.51.100.0/24\"]\nsni = [\"*.evil.example\"]\n";
+    let (_dir, path) = source(original);
+    let edit = PolicyFile::read(&path).unwrap().remove("curl").unwrap();
+    let policy = edit.policy();
+    assert!(!policy.process.contains_key("curl"));
+    // The global block list and alert mode are not the rule's to take.
+    assert_eq!(policy.block.ports, [25]);
+    assert_eq!(policy.alert, AlertMode::All);
+    assert!(edit.diff().contains("-ip = [\"198.51.100.0/24\"]"));
+    assert_eq!(edit.warnings.len(), 2, "{:?}", edit.warnings);
+    assert_eq!(
+        edit.warnings[1],
+        "Its block list goes too (sni *.evil.example · ip 198.51.100.0/24): those destinations will no longer be reported as blocked for curl."
+    );
+}

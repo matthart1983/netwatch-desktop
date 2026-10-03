@@ -39,10 +39,6 @@ pub fn rtt_us(v: Option<f64>) -> String {
     }
 }
 
-pub fn loss_pct(v: f64) -> String {
-    format!("{v:.0}%")
-}
-
 pub fn opt_rate(v: Option<f64>) -> String {
     match v {
         Some(v) => rate(v),

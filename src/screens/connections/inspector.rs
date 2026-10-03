@@ -357,6 +357,13 @@ pub fn reasoning(s: &Snapshot, c: &Connection, verdict: &Verdict, rtt: &[Option<
             issue.summary_line()
         );
     }
+    if let Some(reason) = &verdict.blocked {
+        return format!(
+            "{} → {} matches the egress block list: {reason} — flagged, not dropped.",
+            process_label(c.process_name.as_deref(), c.pid),
+            c.remote_addr
+        );
+    }
     if verdict.drift {
         return format!(
             "{} → {} is not in the egress policy — observed, not blocked.",

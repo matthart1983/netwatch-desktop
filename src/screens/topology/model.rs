@@ -752,6 +752,7 @@ pub(crate) mod tests {
 
     fn trace(target: &str, at: &str, hops: &[(&str, f64)]) -> TracerouteResult {
         TracerouteResult {
+            reached: None,
             completed: Some(Instant::now()),
             completed_at: at.into(),
             target: target.into(),
@@ -850,6 +851,7 @@ pub(crate) mod tests {
             Cause, CheckResult, Evidence, IssueState, Scope, Severity, Verify,
         };
         Issue {
+            stale_since: None,
             id: "2026-0913-01".into(),
             rule: "path.changed".into(),
             severity: Severity::Info,

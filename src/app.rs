@@ -1516,6 +1516,12 @@ impl DesktopApp {
                     {
                         nav.push(Nav::Tab(Tab::Egress));
                     }
+                    let blocked = s.map(screens::blocked_count).unwrap_or(0);
+                    if blocked > 0
+                        && ui_kit::chip(ui, &format!("{blocked} blocked"), theme::error()).clicked()
+                    {
+                        nav.push(Nav::Tab(Tab::Egress));
+                    }
                     let open = s.map(|s| s.issues.len()).unwrap_or(0);
                     if open > 0 && ui_kit::chip(ui, &format!("⚠ {open}"), theme::error()).clicked()
                     {
@@ -2444,6 +2450,47 @@ mod tests {
             assert!(app.sheet.is_some(), "{sheet} closed itself");
             app.sheet = None;
         }
+    }
+    #[test]
+    fn title_bar_chips_name_blocked_and_drifting_destinations() {
+        use netwatch::collectors::egress::Verdict;
+        let mut app = DesktopApp::new(Backend::preview(), Tab::Dashboard);
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        let chips = |app: &mut DesktopApp, s: &Snapshot| {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1440.0, 900.0))),
+                ..Default::default()
+            };
+            let mut out = Vec::new();
+            for _ in 0..2 {
+                let output = ctx.run(input.clone(), |ctx| app.draw_full(ctx, Some(s), Some(s)));
+                out = output
+                    .shapes
+                    .iter()
+                    .filter_map(|c| match &c.shape {
+                        egui::Shape::Text(t) if t.pos.y < theme::TITLE_HEIGHT => {
+                            Some(t.galley.text().to_string())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+            }
+            out
+        };
+        // The fixture has one drifting destination and nothing blocked.
+        let mut s = crate::backend::tests::snapshot();
+        s.egress = Arc::new(crate::screens::egress::fixture::snapshot());
+        let texts = chips(&mut app, &s);
+        assert!(texts.iter().any(|t| t == "1 drift"), "{texts:?}");
+        assert!(!texts.iter().any(|t| t.ends_with("blocked")), "{texts:?}");
+        Arc::make_mut(&mut s.egress).verdicts.insert(
+            ("curl".into(), "evil.example".into(), 443),
+            Verdict::Blocked("evil.example is blocked (*.evil.example)".into()),
+        );
+        let texts = chips(&mut app, &s);
+        assert!(texts.iter().any(|t| t == "1 blocked"), "{texts:?}");
+        assert!(texts.iter().any(|t| t == "1 drift"), "{texts:?}");
     }
     #[test]
     fn graph_toggle_applies_now_survives_a_stale_snapshot_then_follows_config() {

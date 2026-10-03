@@ -73,10 +73,25 @@ pub fn badge(tab: Tab, s: &Snapshot) -> Option<(String, Color32)> {
             })
         }
         Tab::Egress => {
+            let blocked = blocked_count(s);
             let drift = drift_count(s);
-            (drift > 0).then(|| (format!("{drift} drift"), theme::violet()))
+            if blocked > 0 {
+                Some((format!("{blocked} blocked"), theme::error()))
+            } else {
+                (drift > 0).then(|| (format!("{drift} drift"), theme::violet()))
+            }
         }
     }
+}
+
+/// Destinations matching the egress policy's block list.
+pub fn blocked_count(s: &Snapshot) -> usize {
+    use netwatch::collectors::egress::Verdict;
+    s.egress
+        .verdicts
+        .values()
+        .filter(|v| matches!(v, Verdict::Blocked(_)))
+        .count()
 }
 
 pub fn drift_count(s: &Snapshot) -> usize {

@@ -277,11 +277,7 @@ impl Packets {
                     .streams
                     .lock()
                     .ok()
-                    .and_then(|mut t| {
-                        t.all_streams
-                            .get_mut(index)
-                            .map(|st| st.quic_h3.decoded_bodies())
-                    })
+                    .map(|mut t| t.quic_h3_bodies(*index))
                     .unwrap_or_default(),
                 _ => Vec::new(),
             };

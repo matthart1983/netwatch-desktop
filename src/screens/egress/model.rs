@@ -5,7 +5,7 @@ use crate::backend::EgressSnapshot;
 use crate::theme;
 use egui::Color32;
 use netwatch::collectors::egress::{
-    rule_diff, wildcard_suggestions, EgressDest, ProcessRule, Verdict,
+    rule_diff, wildcard_suggestions, BlockList, EgressDest, ProcessRule, Verdict,
 };
 use std::collections::{BTreeSet, HashSet};
 use std::time::SystemTime;
@@ -50,42 +50,63 @@ impl MatchKind {
 /// `show` group of the control strip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Show {
-    Drift,
+    /// Blocked destinations and drift.
+    Findings,
     NoRule,
     All,
 }
 
 impl Show {
-    pub const ALL: [Show; 3] = [Show::Drift, Show::NoRule, Show::All];
+    pub const ALL: [Show; 3] = [Show::Findings, Show::NoRule, Show::All];
     pub fn label(self) -> &'static str {
         match self {
-            Show::Drift => "drift",
+            Show::Findings => "findings",
             Show::NoRule => "no rule",
             Show::All => "all",
         }
     }
+    /// The saved setting. Findings saves as `drift`, its name before blocked
+    /// destinations joined it, so a saved filter still restores.
+    pub fn key(self) -> &'static str {
+        match self {
+            Show::Findings => "drift",
+            other => other.label(),
+        }
+    }
     pub fn admits(self, v: &Verdict) -> bool {
         match self {
-            Show::Drift => is_drift(v),
+            Show::Findings => is_finding(v),
             Show::NoRule => matches!(v, Verdict::NoRule | Verdict::NoPolicy),
             Show::All => true,
         }
     }
 }
 
-/// Findings: drift, and a missing rule under `strict = true`.
+/// Allowlist misses: drift, and a missing rule under `strict = true`.
 pub fn is_drift(v: &Verdict) -> bool {
     matches!(v, Verdict::Drift | Verdict::Undeclared)
 }
 
-/// Pill text and ground for a verdict: sni ip asn good · ech info · drift
-/// violet · no rule muted · undeclared warn.
+/// A destination matching an explicit block entry. Blocking wins over any
+/// allow line, so adding one cannot clear it.
+pub fn is_blocked(v: &Verdict) -> bool {
+    matches!(v, Verdict::Blocked(_))
+}
+
+/// Findings: blocked destinations and allowlist misses.
+pub fn is_finding(v: &Verdict) -> bool {
+    is_blocked(v) || is_drift(v)
+}
+
+/// Pill text and ground for a verdict: sni ip asn good · ech info · blocked
+/// error · drift violet · no rule muted · undeclared warn.
 pub fn verdict_pill(v: &Verdict) -> (&'static str, Option<Color32>) {
     match v {
         Verdict::Sni => ("sni", Some(theme::good())),
         Verdict::Ip => ("ip", Some(theme::good())),
         Verdict::Asn(_) => ("asn", Some(theme::good())),
         Verdict::Ech => ("ech", Some(theme::info())),
+        Verdict::Blocked(_) => ("blocked", Some(theme::error())),
         Verdict::Drift => ("drift", Some(theme::violet())),
         Verdict::NoRule => ("no rule", None),
         Verdict::Undeclared => ("undeclared", Some(theme::warn())),
@@ -140,6 +161,9 @@ pub struct ProcRow {
 impl ProcRow {
     pub fn drift(&self) -> usize {
         self.dests.iter().filter(|d| is_drift(&d.verdict)).count()
+    }
+    pub fn blocked(&self) -> usize {
+        self.dests.iter().filter(|d| is_blocked(&d.verdict)).count()
     }
 }
 
@@ -236,12 +260,22 @@ fn proc_row(e: &EgressSnapshot, process: &str, dests: Vec<DestRow>) -> ProcRow {
     row
 }
 
-/// `ruled · N`, `ruled · N · N drift`, `no rule · N`, `undeclared · N`.
+/// `ruled · N`, `ruled · N · N drift`, `no rule · N`, `undeclared · N`,
+/// each followed by `· N blocked` when the block list matched any.
 pub fn summary(e: &EgressSnapshot, row: &ProcRow) -> (String, Option<Color32>) {
     let n = row.dests.len();
     let Some(policy) = e.policy.as_ref() else {
         return (format!("no policy · {n}"), None);
     };
+    let (text, color) = allowlist_summary(policy.strict, row);
+    match row.blocked() {
+        0 => (text, color),
+        blocked => (format!("{text} · {blocked} blocked"), Some(theme::error())),
+    }
+}
+
+fn allowlist_summary(strict: bool, row: &ProcRow) -> (String, Option<Color32>) {
+    let n = row.dests.len();
     if row.ruled {
         let admitted = row
             .dests
@@ -257,7 +291,7 @@ pub fn summary(e: &EgressSnapshot, row: &ProcRow) -> (String, Option<Color32>) {
         } else {
             (format!("ruled · {admitted}"), Some(theme::good()))
         }
-    } else if policy.strict {
+    } else if strict {
         (format!("undeclared · {n}"), Some(theme::warn()))
     } else {
         (format!("no rule · {n}"), None)
@@ -458,8 +492,9 @@ pub enum DiffKind {
 }
 
 /// The `[process.<name>]` table `merge_rules_into_policy_file` would write
-/// (a sorted union of the declared and observed entries, all four keys),
-/// as a unified diff against the declared rule.
+/// (a sorted union of the declared and observed entries, all four keys, and
+/// the declared `block` table unchanged), as a unified diff against the
+/// declared rule.
 pub fn policy_diff(
     process: &str,
     old: Option<&ProcessRule>,
@@ -493,6 +528,9 @@ pub fn policy_diff(
         } else {
             union(old.map_or(&[][..], |r| &r.allow_ports), &new.allow_ports)
         },
+        // Promotion only adds allow entries. A per-process block list is
+        // carried across untouched, so the preview must not show it going.
+        block: old.map(|r| r.block.clone()).unwrap_or_default(),
     };
     if old
         .is_some_and(|r| r.allow_sni.is_empty() && r.allow_asn.is_empty() && r.allow_ip.is_empty())
@@ -513,6 +551,7 @@ pub fn policy_diff(
     for s in wildcard_suggestions(&merged) {
         out.push((DiffKind::Comment, format!("# suggestion: {s}")));
     }
+    let block_header = format!("{}.block]", header.trim_end_matches(']'));
     out.push((
         if old.is_some() {
             DiffKind::Context
@@ -554,6 +593,61 @@ pub fn policy_diff(
             None => out.push((DiffKind::Add, line(&after))),
         }
     }
+    let block = &merged.block;
+    if !block.is_empty() {
+        out.push((DiffKind::Context, block_header));
+        for (key, value, empty) in [
+            ("sni", strings(&block.sni), block.sni.is_empty()),
+            ("asn", strings(&block.asn), block.asn.is_empty()),
+            ("ip", strings(&block.ip), block.ip.is_empty()),
+            ("ports", ports(&block.ports), block.ports.is_empty()),
+        ] {
+            if !empty {
+                out.push((DiffKind::Context, format!("{key:<11} = {value}")));
+            }
+        }
+    }
+    out
+}
+
+/// Destinations the block list matched, as `(process, label:port)`, sorted;
+/// for one process or, with `None`, every process. Promotion leaves these
+/// out.
+pub fn blocked_dests(e: &EgressSnapshot, process: Option<&str>) -> Vec<(String, String)> {
+    let mut out: Vec<_> = e
+        .verdicts
+        .iter()
+        .filter(|((p, _, _), v)| is_blocked(v) && process.is_none_or(|want| p == want))
+        .map(|((p, label, port), _)| (p.clone(), format!("{label}:{port}")))
+        .collect();
+    out.sort();
+    out
+}
+
+/// The review warning for a promotion that left blocked destinations out.
+pub fn left_out_warning(left_out: &[String]) -> Option<String> {
+    let n = left_out.len();
+    if n == 0 {
+        return None;
+    }
+    let shown = n.min(6);
+    let mut list = left_out[..shown].join(" · ");
+    if n > shown {
+        list.push_str(&format!(" · +{} more", n - shown));
+    }
+    Some(format!(
+        "Leaves out {n} blocked destination{} ({list}). Promotion never allows what the block list matches.",
+        if n == 1 { "" } else { "s" }
+    ))
+}
+
+/// A block list as `sni *.example.net`, `ip 10.0.0.0/8`, `asn X`, `port 25`.
+pub fn block_entries(block: &BlockList) -> Vec<String> {
+    let mut out = Vec::new();
+    out.extend(block.sni.iter().map(|v| format!("sni {v}")));
+    out.extend(block.ip.iter().map(|v| format!("ip {v}")));
+    out.extend(block.asn.iter().map(|v| format!("asn {v}")));
+    out.extend(block.ports.iter().map(|v| format!("port {v}")));
     out
 }
 
@@ -710,6 +804,120 @@ mod tests {
     }
 
     #[test]
+    fn diff_preview_keeps_the_declared_block_list() {
+        let old = ProcessRule {
+            allow_sni: vec!["api.github.com".into()],
+            allow_ports: vec![443],
+            block: BlockList {
+                sni: vec!["*.evil.example".into()],
+                ports: vec![25],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let new = ProcessRule {
+            allow_sni: vec!["uploads.github.com".into()],
+            allow_ports: vec![443],
+            ..Default::default()
+        };
+        let diff = policy_diff("curl", Some(&old), &new);
+        let block = diff
+            .iter()
+            .position(|l| l.1 == "[process.curl.block]")
+            .expect("block table shown");
+        assert_eq!(diff[block].0, DiffKind::Context);
+        assert_eq!(
+            diff[block + 1..],
+            [
+                (
+                    DiffKind::Context,
+                    "sni         = [\"*.evil.example\"]".into()
+                ),
+                (DiffKind::Context, "ports       = [25]".into()),
+            ]
+        );
+        assert!(
+            diff.iter()
+                .filter(|(k, _)| *k == DiffKind::Remove)
+                .all(|(_, l)| l.starts_with("allow_sni")),
+            "only the widened allowlist changes: {diff:?}"
+        );
+        let quoted = policy_diff("my app", Some(&old), &new);
+        assert!(quoted.contains(&(DiffKind::Context, "[process.\"my app\".block]".into())));
+        // No declared rule, nothing to carry.
+        assert!(!policy_diff("curl", None, &new)
+            .iter()
+            .any(|l| l.1.ends_with(".block]")));
+    }
+
+    #[test]
+    fn blocked_is_an_error_finding_that_leads_the_summary() {
+        let blocked = Verdict::Blocked("evil.example is blocked (*.evil.example)".into());
+        assert_eq!(verdict_pill(&blocked), ("blocked", Some(theme::error())));
+        assert!(is_blocked(&blocked) && is_finding(&blocked) && !is_drift(&blocked));
+        assert!(Show::Findings.admits(&blocked));
+        assert!(is_finding(&Verdict::Drift) && !is_finding(&Verdict::NoRule));
+        let mut e = EgressSnapshot::default();
+        let mut profile = netwatch::collectors::egress::EgressProfile {
+            process: "curl".into(),
+            dests: Default::default(),
+            last_seen: SystemTime::now(),
+        };
+        profile.dests.insert(
+            ("evil.example".into(), 443),
+            dest(Some("evil.example"), None, "203.0.113.66", 443),
+        );
+        profile.dests.insert(
+            ("api.github.com".into(), 443),
+            dest(Some("api.github.com"), None, "140.82.1.1", 443),
+        );
+        e.verdicts
+            .insert(("curl".into(), "evil.example".into(), 443), blocked);
+        e.verdicts
+            .insert(("curl".into(), "api.github.com".into(), 443), Verdict::Sni);
+        e.profiles.push(profile);
+        e.policy = Some(netwatch::collectors::egress::EgressPolicy {
+            process: [("curl".to_string(), ProcessRule::default())].into(),
+            ..Default::default()
+        });
+        let rows = build(&e, &Scope::default());
+        assert_eq!(rows[0].blocked(), 1);
+        assert_eq!(
+            rows[0].summary,
+            ("ruled · 1 · 1 blocked".to_string(), Some(theme::error()))
+        );
+        // Unruled, the block list still applies and still shows.
+        e.policy.as_mut().unwrap().process.clear();
+        let rows = build(&e, &Scope::default());
+        assert_eq!(rows[0].summary.0, "no rule · 2 · 1 blocked");
+        let lines = lines(&rows, Show::Findings, &HashSet::new());
+        let [Line::Process(0), Line::Dest(0, d)] = lines[..] else {
+            panic!("{lines:?}");
+        };
+        assert_eq!(rows[0].dests[d].label, "evil.example");
+    }
+
+    #[test]
+    fn block_entries_name_each_dimension() {
+        let block = BlockList {
+            sni: vec!["*.evil.example".into()],
+            asn: vec!["EVILNET".into()],
+            ip: vec!["203.0.113.0/24".into()],
+            ports: vec![25],
+        };
+        assert_eq!(
+            block_entries(&block),
+            [
+                "sni *.evil.example",
+                "ip 203.0.113.0/24",
+                "asn EVILNET",
+                "port 25"
+            ]
+        );
+        assert!(block_entries(&BlockList::default()).is_empty());
+    }
+
+    #[test]
     fn tree_folds_and_filters_by_show() {
         let mut e = EgressSnapshot::default();
         let mut profile = netwatch::collectors::egress::EgressProfile {
@@ -735,12 +943,13 @@ mod tests {
         e.policy = Some(netwatch::collectors::egress::EgressPolicy {
             strict: false,
             process: [("node".to_string(), ProcessRule::default())].into(),
+            ..Default::default()
         });
         let rows = build(&e, &Scope::default());
         assert_eq!(rows[0].summary.0, "ruled · 1 · 1 drift");
         let all = lines(&rows, Show::All, &HashSet::new());
         assert_eq!(all.len(), 3);
-        let drift = lines(&rows, Show::Drift, &HashSet::new());
+        let drift = lines(&rows, Show::Findings, &HashSet::new());
         assert_eq!(drift, vec![Line::Process(0), Line::Dest(0, 0)]);
         let folded: HashSet<String> = ["node".to_string()].into();
         assert_eq!(lines(&rows, Show::All, &folded), vec![Line::Process(0)]);

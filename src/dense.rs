@@ -427,9 +427,7 @@ impl Dense {
                     .gateway_target
                     .as_deref()
                     .unwrap_or("not configured"),
-                h.gateway_rtt_ms,
-                h.gateway_loss_pct,
-                h.completed.gateway,
+                s.probe("gateway"),
             ),
             (
                 "DNS",
@@ -437,17 +435,9 @@ impl Dense {
                     .dns_target
                     .as_deref()
                     .unwrap_or("not configured"),
-                h.dns_rtt_ms,
-                h.dns_loss_pct,
-                h.completed.dns,
+                s.probe("dns"),
             ),
-            (
-                "Internet",
-                "internet",
-                h.internet_rtt_ms,
-                h.internet_loss_pct,
-                h.completed.internet,
-            ),
+            ("Internet", "internet", s.probe("internet")),
         ];
         let histories = [
             (&h.completed.gateway_history, &h.gateway_rtt_history),
@@ -492,11 +482,10 @@ impl Dense {
                         if visible[column] { header_cell(ui, widths[column], header_height, LABELS[column], small, column == 0); }
                     }
                 });
-                for (i, (name, target, rtt, loss, at)) in rows.iter().enumerate() {
+                for (i, (name, target, probe)) in rows.iter().enumerate() {
                     let color = s.health_color(["gateway", "dns", "internet"][i]);
-                    let fresh = at.is_some_and(|at| {
-                        s.observed_at.saturating_duration_since(at).as_secs_f64() <= 30.0
-                    });
+                    let rtt = &probe.rtt;
+                    let fresh = probe.state.is_fresh();
                     let stats = rtt_stats(histories[i].1);
                     let stat = |pick: fn(&RttStats) -> f64| stats.as_ref().map(|s| format!("{:.1}ms", pick(s))).unwrap_or_else(|| "—".into());
                     let budget = [20.0, 100.0, 250.0][i];
@@ -532,7 +521,10 @@ impl Dense {
                                 3 => { cell(ui, w, row_height, RichText::new(stat(|s| s.min)).color(theme::text2())); }
                                 4 => { cell(ui, w, row_height, RichText::new(stat(|s| s.p95)).color(theme::text2())); }
                                 5 => { cell(ui, w, row_height, RichText::new(stat(|s| s.jitter)).color(theme::text2())).on_hover_text("Mean absolute change between consecutive measured probes"); }
-                                6 => { cell(ui, w, row_height, if at.is_some() { format::loss_pct(*loss) } else { "—".into() }); }
+                                6 => {
+                                    let response = cell(ui, w, row_height, probe.loss.label(0));
+                                    if let Some(note) = probe.state.note() { response.on_hover_text(note); }
+                                }
                                 7 => {
                                     let count = stats.as_ref().map_or(0, |s| s.count);
                                     cell(ui, w, row_height, RichText::new(count.to_string()).color(theme::text2())).on_hover_text(format!("{count} measured of {} retained probes", histories[i].1.len()));
@@ -545,7 +537,10 @@ impl Dense {
                                         });
                                     });
                                 }
-                                9 => { cell(ui, w, row_height, RichText::new(if at.is_none() { "waiting" } else if !fresh { "stale" } else if rtt.is_none() { "failed" } else { "measured" }).color(color)); }
+                                9 => {
+                                    let response = cell(ui, w, row_height, RichText::new(probe.state.word("measured")).color(color));
+                                    if let Some(note) = probe.state.note() { response.on_hover_text(note); }
+                                }
                                 _ => { cell_left(ui, w, row_height, RichText::new(&s.baselines[i]).color(theme::text2())).on_hover_text(&s.baselines[i]); }
                             }
                         }

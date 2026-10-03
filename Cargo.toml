@@ -16,8 +16,9 @@ path = "src/main.rs"
 # `default-features = false` skips the eBPF attribution path (netwatch-sdk +
 # aya) — desktop MVP runs on the same lsof/procfs fallback the TUI uses when
 # eBPF is unavailable, avoiding a kernel-capability dependency for a first
-# build.
-netwatch = { package = "netwatch-tui", path = "../netwatch", default-features = false }
+# build. Pinned exactly: netwatch's library API changes between minor
+# releases, so moving to a new version is a deliberate port.
+netwatch = { package = "netwatch-tui", version = "=0.35.1", default-features = false }
 eframe = "0.28"
 egui = { version = "0.28", features = ["bytemuck"] }
 # Share Netwatch's existing graph magnitude ramp; no second palette algorithm.

@@ -37,15 +37,12 @@ It is not a remote dashboard. There is no server and no second engine. The app l
 
 ## Building
 
-For **v0.1.1**, use the matching `netwatch-desktop-v0.1.1-source.tar.gz` asset from [Releases](https://github.com/matthart1983/netwatch-desktop/releases/tag/v0.1.1). It includes both repositories' source in the required layout, including the netwatch changes this desktop build needs. Extract it, enter `netwatch-desktop`, and run `cargo build --release --locked`.
-
-For development, the app depends on the netwatch crate by path. Check both repositories out side by side, using a netwatch revision with the Diagnose APIs required by this checkout:
+The netwatch library comes from crates.io as `netwatch-tui`, pinned to an exact version (0.35.1). You don't need a netwatch checkout.
 
 ```sh
-git clone https://github.com/matthart1983/netwatch
 git clone https://github.com/matthart1983/netwatch-desktop
 cd netwatch-desktop
-cargo build --release
+cargo build --release --locked
 ```
 
 You need a recent stable Rust toolchain and the same system libraries netwatch needs, plus what eframe needs to open a window.
@@ -65,6 +62,14 @@ sudo apt install libpcap-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev
 On macOS, the Xcode command line tools are enough.
 
 This build turns off netwatch's eBPF attribution (`default-features = false`), so there is no kernel-capability dependency beyond packet capture.
+
+To build against a local netwatch checkout instead, override the dependency for one command rather than editing `Cargo.toml`:
+
+```sh
+cargo build --config 'patch.crates-io.netwatch-tui.path="../netwatch"'
+```
+
+The checkout's version has to match the pin, or cargo warns that the patch was not used and builds the crates.io release. The override also rewrites `Cargo.lock`, so leave that change out of commits (`git checkout Cargo.lock`).
 
 ## Running
 
@@ -123,8 +128,8 @@ Active health checks send DNS, reachability and STUN probes. Collection and anal
 
 Every tab shares one frame:
 
-- The title bar has the breadcrumb (for example `connections › claude:443`), a command field that opens the palette, chips for recorder state, pause, open issues and egress drift, the capture interface, and the menu.
-- The navigator on the left lists the ten tabs with live badges (socket count, packet rate, open issue count, drift). Under it is a network tree (this machine, gateway, dns, internet, interfaces) and the top processes. Clicking a node filters the current tab and adds it to the breadcrumb. `esc` removes it.
+- The title bar has the breadcrumb (for example `connections › claude:443`), a command field that opens the palette, chips for recorder state, pause, open issues, blocked egress destinations and egress drift, the capture interface, and the menu.
+- The navigator on the left lists the ten tabs with live badges (socket count, packet rate, open issue count, blocked or drifting destinations). Under it is a network tree (this machine, gateway, dns, internet, interfaces) and the top processes. Clicking a node filters the current tab and adds it to the breadcrumb. `esc` removes it.
 - A status strip appears when an issue is open. It reads from the same issue list as the diagnose tab and disappears when things are healthy.
 - The inspector on the right follows the selection on tabs that have one (dashboard, connections, packets, processes, egress).
 - The timeline dock sits under the dashboard, connections and diagnose.
@@ -189,7 +194,7 @@ Each tab lists its own keys in the footer and in `?`.
 
 The target strip expands to show configured services and their DNS, TCP, TLS and HTTP probe results. In **Tests and recovery**, each offered test describes its traffic and estimated cost before you run it; running tests and the latest results appear alongside it. **I've done this** records a manual remediation step and lets the engine check recovery, including re-running supporting tests after a minute. **What caused this issue?** saves your answer with the recorded incident when episode recording is enabled.
 
-**0 egress.** Learned destinations per process as a foldable tree with match type (SNI, IP, ASN, ECH), bytes, first and last seen, activity and policy verdict. The inspector shows what was seen and which rule line would admit it. `a` reviews allowing one destination, `d` keeps warning for the re-warn interval, `↵` on a destination opens packets, and `↵` on a process or `w` reviews its promotion. `P` reviews all observed processes together; `x` reviews removing the selected process rule. Every policy change shows the complete file diff before `y` or **Write policy** confirms it; `esc` cancels. Allowing an unruled process explains how many other observed destinations will become drift. Demo mode disables policy writes. Invalid or group/world-writable policy files are refused; the backend also rejects a file changed since preview. Writes preserve existing permission bits, comments and unrestricted ports.
+**0 egress.** Learned destinations per process as a foldable tree with match type (SNI, IP, ASN, ECH), bytes, first and last seen, activity and policy verdict. The inspector shows what was seen and which rule line would admit it. `a` reviews allowing one destination, `d` keeps warning for the re-warn interval, `↵` on a destination opens packets, and `↵` on a process or `w` reviews its promotion. `P` reviews all observed processes together; `x` reviews removing the selected process rule. Every policy change shows the complete file diff before `y` or **Write policy** confirms it; `esc` cancels. Allowing an unruled process explains how many other observed destinations will become drift. A destination on the policy's block list, global `[block]` or `[process.<name>.block]`, reads `blocked` in red, comes first in the status strip and the tab badge, and has no allow action, because a block entry wins over any allow line. Promotion leaves blocked destinations out of the rule, and its review names them. The navigator lists the global block list and the alert mode: blocked destinations only by default, every finding with `alert = "all"`. Demo mode disables policy writes. Invalid or group/world-writable policy files are refused; the backend also rejects a file changed since preview. Writes preserve existing permission bits, comments, unrestricted ports, the global block list and the alert mode. Allowing and promoting also keep a rule's own block list. Removing a rule removes its block list with it, and the review names the entries that go.
 
 ## Views: full, lite, dense
 
@@ -290,7 +295,6 @@ Design decisions and the reasoning behind them are in [docs/DESIGN-NOTES.md](doc
 - Timeline retransmission and recorder history start when the app starts.
 - Right-click selects but doesn't open an actions menu, and table columns can't be reordered or resized.
 - App-drawn window chrome is opt-in until edge resizing is checked on more compositors.
-- The path dependency on `../netwatch` means a fresh clone only builds next to a netwatch checkout.
 
 ## License
 
