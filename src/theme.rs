@@ -237,6 +237,8 @@ pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
 }
 
 pub const NAV_WIDTH: f32 = 200.0;
+/// The labelled navigator without its groups: key and name, no badge text.
+pub const NAV_NARROW_WIDTH: f32 = 128.0;
 pub const RAIL_WIDTH: f32 = 40.0;
 pub const INSPECTOR_WIDTH: f32 = 316.0;
 pub const EGRESS_INSPECTOR_WIDTH: f32 = 360.0;

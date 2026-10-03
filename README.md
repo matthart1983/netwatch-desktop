@@ -136,7 +136,7 @@ Every tab shares one frame:
 - The timeline dock sits under the dashboard, connections and diagnose.
 - The footer lists the keys the current tab responds to. Every hint is clickable and does the same thing as the key. Results of writes (exports, policy changes, config saves) show at the right with their path.
 
-Below 1180 points wide the navigator shrinks to a rail of digits; below 1000 the inspector moves into a sheet opened with `I`. Points are window pixels divided by the text size, so at the default 115% that's about 1357 and 1150 pixels; `ctrl -` brings the navigator back on a smaller screen. The menu and palette can also collapse the navigator and hide the timeline dock, and the dock gives up height in short windows.
+As the window narrows or the text grows, the inspector goes first. Below 1180 points wide it moves into a sheet opened with `I`. Below 860 the navigator drops the network tree and process list and keeps a narrow list of tab names. Below 620 it becomes a rail of digits, and hovering a digit shows the tab's name. The tab list scrolls when the window is too short for all ten. Points are window pixels divided by the text size. At the default 115% the inspector goes below about 1357 pixels, and tab names stay up to 200% on a 1366-pixel screen and up to 300% on a 1920-pixel one. The menu and palette can collapse the navigator to the rail, which keeps the inspector down to 1020 points, and can hide the timeline dock. The dock gives up height in short windows.
 
 ## Keys
 

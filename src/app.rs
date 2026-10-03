@@ -83,12 +83,64 @@ impl Default for Options {
     }
 }
 
-/// Layout breakpoints in points, i.e. window pixels ÷ UI zoom (ctrl ±).
-/// Below `RAIL_WIDTH` the navigator becomes the icon rail; below
-/// `COMPACT_WIDTH` the inspector moves into a sheet (`I`). At the default
-/// zoom of 1.15 that is about 1357 and 1150 window pixels.
-pub const RAIL_WIDTH: f32 = 1180.0;
-pub const COMPACT_WIDTH: f32 = 1000.0;
+/// Layout breakpoints in points (window pixels ÷ text size). As the window
+/// narrows or the text grows, the shell gives things up in this order:
+/// - the inspector column, which moves into a sheet (`I`) once the screen
+///   beside it would be under `SCREEN_MIN_WIDTH`. With the full navigator
+///   that is below 1180 pt, about 1357 window pixels at 115%.
+/// - below `FULL_NAV_WIDTH`, the navigator's network and process groups,
+///   leaving a narrow list of tab names.
+/// - below `RAIL_WIDTH`, the names, for the digit rail.
+///
+/// Tab names stay up to 200% on a 1366-pixel screen and 300% on a 1920.
+pub const SCREEN_MIN_WIDTH: f32 = 664.0;
+pub const FULL_NAV_WIDTH: f32 = 860.0;
+pub const RAIL_WIDTH: f32 = 620.0;
+
+/// The navigator's three widths.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NavMode {
+    /// Tab names with badges, then the network tree and process list.
+    Full,
+    /// Tab names only.
+    Narrow,
+    /// Tab digits; the names are tooltips and screen-reader labels.
+    Rail,
+}
+
+impl NavMode {
+    pub fn width(self) -> f32 {
+        match self {
+            NavMode::Full => theme::NAV_WIDTH,
+            NavMode::Narrow => theme::NAV_NARROW_WIDTH,
+            NavMode::Rail => theme::RAIL_WIDTH,
+        }
+    }
+}
+
+/// What the full view shows at `width` points: the navigator's mode and
+/// whether the inspector has a column. `collapsed` is the user's choice of
+/// the rail ("collapse navigator"), which leaves more room for the
+/// inspector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShellLayout {
+    pub nav: NavMode,
+    pub inspector: bool,
+}
+
+impl ShellLayout {
+    pub fn for_width(width: f32, collapsed: bool) -> Self {
+        let nav = if collapsed || width < RAIL_WIDTH {
+            NavMode::Rail
+        } else if width < FULL_NAV_WIDTH {
+            NavMode::Narrow
+        } else {
+            NavMode::Full
+        };
+        let inspector = width - nav.width() - theme::INSPECTOR_WIDTH >= SCREEN_MIN_WIDTH;
+        Self { nav, inspector }
+    }
+}
 
 pub struct DesktopApp {
     backend: Arc<Backend>,
@@ -126,6 +178,9 @@ pub struct DesktopApp {
     armed_since: Option<Instant>,
     theme_applied: Option<&'static str>,
     full_window: Option<egui::Vec2>,
+    /// The tab the navigator last showed as current, so a tab switched by
+    /// key scrolls into view in a rail that does not fit.
+    nav_shown: Option<Tab>,
     /// Keys queued by footer/strip clicks, dispatched like keyboard input.
     clicked: Vec<Key>,
     quit: bool,
@@ -213,6 +268,7 @@ impl DesktopApp {
             armed_since: None,
             theme_applied: None,
             full_window: None,
+            nav_shown: None,
             clicked: Vec::new(),
             quit: false,
             deferred_sheet: None,
@@ -392,7 +448,7 @@ impl DesktopApp {
         let mut commands = Vec::new();
         let mut nav = Vec::new();
         let filter = self.filter();
-        let compact = ctx.screen_rect().width() < COMPACT_WIDTH;
+        let compact = !self.layout(ctx).inspector;
 
         if s.is_none() {
             self.sheet = None;
@@ -506,7 +562,7 @@ impl DesktopApp {
             Key::Char('q') => self.quit = true,
             // Compact windows have no inspector column: I opens it as a sheet.
             Key::Char('I')
-                if ctx.screen_rect().width() < COMPACT_WIDTH
+                if !self.layout(ctx).inspector
                     && self.screens[Self::screen_index(self.tab())]
                         .inspector_width()
                         .is_some() =>
@@ -1350,10 +1406,13 @@ impl eframe::App for DesktopApp {
 // ------------------------------------------------------------------ frame
 
 impl DesktopApp {
+    fn layout(&self, ctx: &egui::Context) -> ShellLayout {
+        ShellLayout::for_width(ctx.screen_rect().width(), self.prefs.nav_collapsed)
+    }
+
     fn draw_full(&mut self, ctx: &egui::Context, s: Option<&Snapshot>, live: Option<&Snapshot>) {
-        let width = ctx.screen_rect().width();
-        let rail = width < RAIL_WIDTH || self.prefs.nav_collapsed;
-        let compact = width < COMPACT_WIDTH;
+        let layout = self.layout(ctx);
+        let compact = !layout.inspector;
         let tab = self.tab();
         let index = Self::screen_index(tab);
         let filter = self.filter();
@@ -1390,23 +1449,26 @@ impl DesktopApp {
             .show(ctx, |ui| self.footer(ui, s, filter.as_ref(), compact));
 
         egui::SidePanel::left("navigator")
-            .exact_width(if rail {
-                theme::RAIL_WIDTH
-            } else {
-                theme::NAV_WIDTH
-            })
+            .exact_width(layout.nav.width())
             .resizable(false)
             .frame(
                 egui::Frame::none()
                     .fill(theme::panel())
                     .stroke(Stroke::new(1.0_f32, theme::border()))
-                    .inner_margin(egui::Margin::symmetric(if rail { 4.0 } else { 8.0 }, 10.0)),
+                    .inner_margin(egui::Margin::symmetric(
+                        match layout.nav {
+                            NavMode::Full => 8.0,
+                            NavMode::Narrow => 6.0,
+                            NavMode::Rail => 4.0,
+                        },
+                        10.0,
+                    )),
             )
             .show(ctx, |ui| {
                 self.navigator(
                     ui,
                     s,
-                    rail,
+                    layout.nav,
                     &mut commands,
                     &mut nav,
                     filter.as_ref(),
@@ -1815,99 +1877,50 @@ impl DesktopApp {
         &mut self,
         ui: &mut Ui,
         s: Option<&Snapshot>,
-        rail: bool,
+        mode: NavMode,
         commands: &mut Vec<Command>,
         nav: &mut Vec<Nav>,
         filter: Option<&Filter>,
         compact: bool,
     ) {
         let current = self.tab();
-        if rail {
-            for tab in Tab::ALL {
-                let (rect, response) = ui.allocate_exact_size(vec2(32.0, 26.0), Sense::click());
-                if tab == current {
-                    ui.painter().rect_filled(rect, 4.0, theme::raised());
-                }
-                ui_kit::paint_text(
-                    ui,
-                    rect,
-                    &tab.key().to_string(),
-                    theme::semibold(theme::DATA),
-                    if tab == current {
-                        theme::accent()
-                    } else {
-                        theme::key_hint()
-                    },
-                    Align::Center,
-                );
-                if let Some((_, color)) = s.and_then(|s| screens::badge(tab, s)) {
-                    ui.painter()
-                        .circle_filled(rect.right_top() + vec2(-5.0, 6.0), 2.5, color);
-                }
-                if response.on_hover_text(tab.name()).clicked() {
-                    nav.push(Nav::Tab(tab));
-                }
-            }
-            return;
+        // A tab chosen by key may be scrolled out of a short navigator.
+        let reveal = self.nav_shown.replace(current) != Some(current);
+        if mode == NavMode::Full {
+            ui_kit::section(ui, "views");
         }
-        ui_kit::section(ui, "views");
-        for tab in Tab::ALL {
-            let active = tab == current;
-            let (rect, response) =
-                ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
-            if active {
-                ui.painter().rect_filled(rect, 4.0, theme::raised());
-            } else if response.hovered() {
-                ui.painter()
-                    .rect_filled(rect, 4.0, theme::raised().gamma_multiply(0.5));
-            }
-            let inner = rect.shrink2(vec2(8.0, 0.0));
-            ui_kit::paint_text(
-                ui,
-                Rect::from_min_size(inner.min, vec2(10.0, inner.height())),
-                &tab.key().to_string(),
-                FontId::monospace(theme::DATA),
-                theme::key_hint(),
-                Align::Min,
-            );
-            ui_kit::paint_text(
-                ui,
-                Rect::from_min_max(inner.min + vec2(16.0, 0.0), inner.max),
-                tab.name(),
-                if active {
-                    theme::semibold(theme::DATA)
-                } else {
-                    FontId::monospace(theme::DATA)
-                },
-                if active {
-                    theme::accent()
-                } else {
-                    theme::text()
-                },
-                Align::Min,
-            );
-            if let Some((badge, color)) = s.and_then(|s| screens::badge(tab, s)) {
-                ui_kit::paint_text(
-                    ui,
-                    inner,
-                    &badge,
-                    FontId::monospace(theme::LABEL),
-                    color,
-                    Align::Max,
-                );
-            }
-            if response
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .clicked()
-            {
-                nav.push(Nav::Tab(tab));
-            }
+        // The list scrolls when the window is too short for all ten (300%
+        // on a 768-pixel screen), so every tab stays reachable by mouse.
+        egui::ScrollArea::vertical()
+            .id_source("navigator_views")
+            .show(ui, |ui| {
+                if mode == NavMode::Narrow {
+                    // All ten names in 1920×1080 at 300%.
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                }
+                for tab in Tab::ALL {
+                    let badge = s.and_then(|s| screens::badge(tab, s));
+                    let response = nav_item(ui, tab, tab == current, badge.as_ref(), mode);
+                    if tab == current && reveal {
+                        response.scroll_to_me(None);
+                    }
+                    if response.clicked() {
+                        nav.push(Nav::Tab(tab));
+                    }
+                }
+            });
+        if mode != NavMode::Full {
+            return;
         }
         ui.add_space(4.0);
         ui_kit::rule(ui);
         let Some(s) = s else {
             return;
         };
+        // No room left under the tab list: the groups go before the tabs.
+        if ui.available_height() < 2.0 * ui_kit::ROW_HEIGHT {
+            return;
+        }
         egui::ScrollArea::vertical()
             .id_source("navigator_groups")
             .show(ui, |ui| {
@@ -2210,6 +2223,98 @@ impl DesktopApp {
     }
 }
 
+/// One navigator entry: the tab's digit on the rail, or its digit and name,
+/// with the live badge as text in the full navigator and as a dot where
+/// there is no room for it. Every form tells screen readers the tab's name
+/// and whether it is the current one; where the name or badge is not
+/// written out, the tooltip says it.
+fn nav_item(
+    ui: &mut Ui,
+    tab: Tab,
+    active: bool,
+    badge: Option<&(String, egui::Color32)>,
+    mode: NavMode,
+) -> egui::Response {
+    let size = match mode {
+        NavMode::Rail => vec2(32.0, 26.0),
+        NavMode::Full | NavMode::Narrow => vec2(ui.available_width(), 22.0),
+    };
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    if active {
+        ui.painter().rect_filled(rect, 4.0, theme::raised());
+    } else if response.hovered() {
+        ui.painter()
+            .rect_filled(rect, 4.0, theme::raised().gamma_multiply(0.5));
+    }
+    if mode == NavMode::Rail {
+        ui_kit::paint_text(
+            ui,
+            rect,
+            &tab.key().to_string(),
+            theme::semibold(theme::DATA),
+            if active {
+                theme::accent()
+            } else {
+                theme::key_hint()
+            },
+            Align::Center,
+        );
+    } else {
+        let inner = rect.shrink2(vec2(8.0, 0.0));
+        ui_kit::paint_text(
+            ui,
+            Rect::from_min_size(inner.min, vec2(10.0, inner.height())),
+            &tab.key().to_string(),
+            FontId::monospace(theme::DATA),
+            theme::key_hint(),
+            Align::Min,
+        );
+        ui_kit::paint_text(
+            ui,
+            Rect::from_min_max(inner.min + vec2(16.0, 0.0), inner.max),
+            tab.name(),
+            if active {
+                theme::semibold(theme::DATA)
+            } else {
+                FontId::monospace(theme::DATA)
+            },
+            if active {
+                theme::accent()
+            } else {
+                theme::text()
+            },
+            Align::Min,
+        );
+        if let (NavMode::Full, Some((text, color))) = (mode, badge) {
+            ui_kit::paint_text(
+                ui,
+                inner,
+                text,
+                FontId::monospace(theme::LABEL),
+                *color,
+                Align::Max,
+            );
+        }
+    }
+    if let (NavMode::Narrow | NavMode::Rail, Some((_, color))) = (mode, badge) {
+        ui.painter()
+            .circle_filled(rect.right_top() + vec2(-5.0, 6.0), 2.5, *color);
+    }
+    let label = match badge {
+        Some((text, _)) => format!("{} · {text}", tab.name()),
+        None => tab.name().to_string(),
+    };
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, active, &label)
+    });
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    match mode {
+        NavMode::Rail => response.on_hover_text(label),
+        NavMode::Narrow if badge.is_some() => response.on_hover_text(label),
+        _ => response,
+    }
+}
+
 /// Removes Tab key events (presses and releases) from `events` and returns
 /// how many presses there were.
 fn take_tab_presses(events: &mut Vec<egui::Event>) -> usize {
@@ -2307,6 +2412,8 @@ fn fit_breadcrumb(ui: &Ui, mut parts: Vec<String>, budget: f32) -> Vec<String> {
     parts
 }
 
+#[cfg(test)]
+mod render_checks;
 #[cfg(test)]
 mod tests {
     use super::*;
