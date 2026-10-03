@@ -54,9 +54,13 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # The versions the packages were checked with. auto-req, caps and
+      # requires behave differently between cargo-generate-rpm versions, and
+      # it isn't in install-action's own list, so unpinned it would come
+      # from cargo-binstall at whatever is newest.
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deb,cargo-generate-rpm
+          tool: cargo-deb@3.8.0,cargo-generate-rpm@0.21.0
 
       - name: Tag is the version in Cargo.toml
         run: packaging/linux/release.sh tag "$RELEASE_TAG"
