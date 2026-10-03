@@ -300,7 +300,27 @@ struct Machine {
     strings: Vec<String>,
 }
 
+/// Words the screenshots draw as ordinary text that are also common user or
+/// host names: "suppressed under its root cause", "Run test", the "host"
+/// grouping, the DEMO badge, "server", "client", "local" and the brand. A
+/// machine named one of these can't be told apart from the interface by
+/// that word, so it isn't looked for. Running the tests as root, or on a
+/// host called test, would otherwise always fail. The address, MAC and home
+/// directory checks still run.
+const ORDINARY_WORDS: &[&str] = &[
+    "root", "test", "host", "demo", "server", "client", "local", "netwatch",
+];
+
 impl Machine {
+    fn new(mut words: Vec<String>, mut strings: Vec<String>) -> Self {
+        // `lo` and the like are in every machine's list, not this one's.
+        words.retain(|w| w.len() > 2);
+        words.retain(|w| !ORDINARY_WORDS.iter().any(|o| o.eq_ignore_ascii_case(w)));
+        strings.retain(|s| s.len() > 2 && !s.starts_with("127.") && s != "::1");
+        strings.retain(|s| !s.chars().all(|c| c == '0' || c == ':'));
+        Self { words, strings }
+    }
+
     fn here() -> Self {
         let mut words: Vec<String> = ["USER", "LOGNAME", "USERNAME", "HOSTNAME"]
             .iter()
@@ -317,11 +337,7 @@ impl Machine {
             strings.extend(info.mac);
         }
         strings.extend(dirs::home_dir().map(|h| h.display().to_string()));
-        // `lo` and the like are in every machine's list, not this one's.
-        words.retain(|w| w.len() > 2);
-        strings.retain(|s| s.len() > 2 && !s.starts_with("127.") && s != "::1");
-        strings.retain(|s| !s.chars().all(|c| c == '0' || c == ':'));
-        Self { words, strings }
+        Self::new(words, strings)
     }
 }
 
@@ -376,10 +392,10 @@ fn leaks(text: &str, machine: &Machine) -> Vec<String> {
 
 #[test]
 fn the_leak_check_catches_real_data_and_passes_documentation_data() {
-    let machine = Machine {
-        words: vec!["hal9000".into(), "dave".into()],
-        strings: vec!["/srv/dave".into()],
-    };
+    let machine = Machine::new(
+        vec!["hal9000".into(), "dave".into()],
+        vec!["/srv/dave".into()],
+    );
     for clean in [
         "browser 2140 · 192.0.2.10:48122 → 198.51.100.20:443",
         "trace 1.1.1.1 via 203.0.113.44 · 2001:db8::5 · 02:00:5e:00:53:10",
@@ -403,11 +419,8 @@ fn the_leak_check_catches_real_data_and_passes_documentation_data() {
     }
 }
 
-/// The screenshots show nothing that wasn't made up for them: no address
-/// outside the documentation ranges and nothing of this machine's.
-#[test]
-fn screenshots_show_only_synthetic_data() {
-    let machine = Machine::here();
+/// Everything on the screenshots that wasn't made up for them.
+fn real_data(machine: &Machine) -> Vec<String> {
     let mut failures = Vec::new();
     for shot in SHOTS {
         let session = Session::take(shot, false);
@@ -419,7 +432,7 @@ fn screenshots_show_only_synthetic_data() {
             texts.len()
         );
         for (text, _) in &texts {
-            for leak in leaks(text, &machine) {
+            for leak in leaks(text, machine) {
                 failures.push(format!("{}: {leak} in {text:?}", shot.file));
             }
             // The capture strip and the palette from before 0.2.0.
@@ -431,7 +444,29 @@ fn screenshots_show_only_synthetic_data() {
             }
         }
     }
+    failures
+}
+
+/// The screenshots show nothing that wasn't made up for them: no address
+/// outside the documentation ranges and nothing of this machine's.
+#[test]
+fn screenshots_show_only_synthetic_data() {
+    let failures = real_data(&Machine::here());
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A user or host named like a word the screenshots draw, such as root
+/// running the tests, doesn't fail them.
+#[test]
+fn names_the_screenshots_use_as_words_pass() {
+    let names = ["root", "test", "host", "demo", "Root", "DEMO"];
+    let machine = Machine::new(names.map(String::from).to_vec(), vec![]);
+    assert!(machine.words.is_empty(), "{:?}", machine.words);
+    let failures = real_data(&machine);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    // Other names are still looked for.
+    let machine = Machine::new(vec!["root".into(), "hal9000".into()], vec![]);
+    assert_eq!(machine.words, ["hal9000"]);
 }
 
 /// Each shot shows what its README caption says.
