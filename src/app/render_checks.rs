@@ -321,3 +321,64 @@ fn a_tab_chosen_by_key_scrolls_into_a_short_rail() {
         .iter()
         .any(|t| t.text == "0" && t.whole && rail.contains_rect(t.rect)));
 }
+
+/// 200% on a 1366×768 laptop leaves connections too narrow for its
+/// options on one line and for its fewest columns.
+#[test]
+fn connections_options_wrap_and_its_columns_scroll_sideways() {
+    let mut window = Window::new(1366.0, 768.0, 2.0);
+    let mut app = full_view(Tab::Connections);
+    let out = window.settle(&mut app);
+    let texts = seen(&out, window.screen);
+    for option in [
+        "concern",
+        "all",
+        "established",
+        "listen",
+        "time-wait",
+        "none",
+        "host",
+        "process",
+    ] {
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.text.split(' ').next() == Some(option) && t.whole),
+            "{option} cut off: {:?}",
+            texts.iter().map(|t| &t.text).collect::<Vec<_>>()
+        );
+    }
+    let screen = window.screen;
+    let verdict = |out: &egui::FullOutput| {
+        seen(out, screen)
+            .into_iter()
+            .find(|t| t.text.starts_with("verdict"))
+    };
+    assert!(
+        verdict(&out).is_none_or(|t| !t.whole),
+        "the verdict column needs more room than 200% leaves"
+    );
+    let header = texts.iter().find(|t| t.text == "process").unwrap().rect;
+    let table = seen(&out, window.screen)
+        .into_iter()
+        .find(|t| t.text.starts_with("remote"))
+        .expect("the remote column's header")
+        .rect;
+    assert!(table.top() > header.bottom());
+    window.frame(
+        &mut app,
+        vec![
+            Event::PointerMoved(table.center()),
+            Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: vec2(-600.0, 0.0),
+                modifiers: Default::default(),
+            },
+        ],
+    );
+    let out = window.settle(&mut app);
+    assert!(
+        verdict(&out).is_some_and(|t| t.whole),
+        "scrolled sideways, the verdict column shows"
+    );
+}

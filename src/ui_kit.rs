@@ -340,9 +340,70 @@ pub struct StripGroup<'a> {
     pub active: usize,
 }
 
+/// Height of each line a control strip wraps onto after its first.
+const STRIP_WRAP_HEIGHT: f32 = 24.0;
+
+fn strip_option(group: &StripGroup, option: usize) -> String {
+    match &group.options[option] {
+        (text, Some(n)) => format!("{text} {n}"),
+        (text, None) => text.clone(),
+    }
+}
+
+/// Lays a control strip's options out in lines of at most `first_room`
+/// points (the first line, beside the keys) and then `room`. Each entry is
+/// (group, option), with `None` for the group's label, which always shares
+/// a line with its first option. The first line may be left to the keys.
+fn strip_lines(
+    ui: &Ui,
+    groups: &[StripGroup],
+    first_room: f32,
+    room: f32,
+) -> Vec<Vec<(usize, Option<usize>)>> {
+    let font = FontId::monospace(theme::LABEL);
+    let gap = ui.spacing().item_spacing.x;
+    // A hair over the text, so rounding never pushes a chip past the edge.
+    let width_of = |text: &str| text_width(ui, text, font.clone()) + 1.0;
+    let mut lines: Vec<Vec<(usize, Option<usize>)>> = vec![Vec::new()];
+    let mut used = 0.0;
+    for (g, group) in groups.iter().enumerate() {
+        let mut units = vec![(vec![(g, None)], width_of(group.label))];
+        for o in 0..group.options.len() {
+            // Chips have 7 pt of padding each side.
+            let chip = width_of(&strip_option(group, o)) + 14.0;
+            if o == 0 {
+                units[0].0.push((g, Some(0)));
+                units[0].1 += gap + chip;
+            } else {
+                units.push((vec![(g, Some(o))], chip));
+            }
+        }
+        for (i, (entries, width)) in units.into_iter().enumerate() {
+            let empty = lines.last().is_some_and(|line| line.is_empty());
+            let lead = match (empty, i) {
+                (true, _) => 0.0,
+                (false, 0) => 14.0 + gap,
+                (false, _) => gap,
+            };
+            let limit = if lines.len() == 1 { first_room } else { room };
+            // An empty line with the whole width keeps whatever comes, even
+            // something wider than it; only the keys' line passes it on.
+            if used + lead + width > limit && !(empty && limit >= room) {
+                lines.push(Vec::new());
+                used = width;
+            } else {
+                used += lead + width;
+            }
+            lines.last_mut().unwrap().extend(entries);
+        }
+    }
+    lines
+}
+
 /// The 30px control strip: dim group label, options (active = filled
-/// chip), counts inside options, right-aligned keys. Returns the clicked
-/// (group, option) and any clicked key.
+/// chip), counts inside options, right-aligned keys. Options that do not
+/// fit beside the keys wrap onto further lines instead of running under
+/// them. Returns the clicked (group, option) and any clicked key.
 pub fn control_strip(
     ui: &mut Ui,
     groups: &[StripGroup],
@@ -350,25 +411,49 @@ pub fn control_strip(
 ) -> (Option<(usize, usize)>, Option<Key>) {
     let mut picked = None;
     let mut key = None;
-    ui.allocate_ui_with_layout(
-        vec2(ui.available_width(), theme::STRIP_HEIGHT),
-        egui::Layout::left_to_right(Align::Center),
-        |ui| {
-            ui.set_min_height(theme::STRIP_HEIGHT);
-            for (g, group) in groups.iter().enumerate() {
-                if g > 0 {
-                    ui.add_space(14.0);
-                }
-                ui.label(mono(group.label, theme::LABEL, theme::muted()));
-                for (o, (text, count)) in group.options.iter().enumerate() {
-                    let label = match count {
-                        Some(n) => format!("{text} {n}"),
-                        None => text.clone(),
+    let width = ui.available_width();
+    let font = FontId::monospace(theme::LABEL);
+    // Each key: its text, 6 pt, its label, then 8 pt and the item gap.
+    let keys_w: f32 = keys
+        .iter()
+        .map(|h| {
+            text_width(ui, &h.key_text(), font.clone())
+                + 6.0
+                + text_width(ui, &h.label, font.clone())
+                + 8.0
+                + ui.spacing().item_spacing.x
+        })
+        .sum();
+    let first_room = if keys.is_empty() {
+        width
+    } else {
+        width - keys_w - 14.0
+    };
+    let lines = strip_lines(ui, groups, first_room, width);
+    for (n, line) in lines.iter().enumerate() {
+        let height = if n == 0 {
+            theme::STRIP_HEIGHT
+        } else {
+            STRIP_WRAP_HEIGHT
+        };
+        ui.allocate_ui_with_layout(
+            vec2(width, height),
+            egui::Layout::left_to_right(Align::Center),
+            |ui| {
+                ui.set_min_height(height);
+                for (i, &(g, option)) in line.iter().enumerate() {
+                    let group = &groups[g];
+                    let Some(o) = option else {
+                        if i > 0 {
+                            ui.add_space(14.0);
+                        }
+                        ui.label(mono(group.label, theme::LABEL, theme::muted()));
+                        continue;
                     };
                     let active = o == group.active;
                     let response = chip_shape(
                         ui,
-                        &label,
+                        &strip_option(group, o),
                         FontId::monospace(theme::LABEL),
                         if active {
                             theme::text()
@@ -391,17 +476,19 @@ pub fn control_strip(
                         picked = Some((g, o));
                     }
                 }
-            }
-            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                for hint in keys.iter().rev() {
-                    if key_hint(ui, hint) {
-                        key = Some(hint.key);
-                    }
-                    ui.add_space(8.0);
+                if n == 0 {
+                    ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                        for hint in keys.iter().rev() {
+                            if key_hint(ui, hint) {
+                                key = Some(hint.key);
+                            }
+                            ui.add_space(8.0);
+                        }
+                    });
                 }
-            });
-        },
-    );
+            },
+        );
+    }
     (picked, key)
 }
 
@@ -477,6 +564,12 @@ impl Column {
 }
 
 pub const COLUMN_GAP: f32 = 4.0;
+
+/// The narrowest a row of `columns` can be: every column at its minimum.
+pub fn min_width(columns: &[Column]) -> f32 {
+    resolve_widths(columns, 0.0).iter().sum::<f32>()
+        + COLUMN_GAP * columns.len().saturating_sub(1) as f32
+}
 
 /// Resolves column widths for `available` pixels (4px gaps between cells).
 pub fn resolve_widths(columns: &[Column], available: f32) -> Vec<f32> {
@@ -609,8 +702,29 @@ impl<'a> Table<'a> {
     }
 
     /// `cell(row, column)` builds each visible cell. `row_style(row)` may
-    /// return a full-width group header text instead of cells.
+    /// return a full-width group header text instead of cells. Narrower
+    /// than every column's minimum, the table scrolls sideways rather than
+    /// cut its last columns off.
     pub fn show(
+        self,
+        ui: &mut Ui,
+        cell: impl FnMut(usize, usize) -> Cell,
+        group: impl FnMut(usize) -> Option<(String, Color32)>,
+    ) -> TableResponse {
+        let needed = min_width(self.columns);
+        if needed <= ui.available_width() + 0.5 {
+            return self.show_columns(ui, cell, group);
+        }
+        egui::ScrollArea::horizontal()
+            .id_source((self.id, "columns"))
+            .show(ui, |ui| {
+                ui.set_width(needed);
+                self.show_columns(ui, cell, group)
+            })
+            .inner
+    }
+
+    fn show_columns(
         self,
         ui: &mut Ui,
         mut cell: impl FnMut(usize, usize) -> Cell,
@@ -1367,5 +1481,158 @@ mod bar_tests {
             theme::GraphLook::from_config("bars", false).style_name(),
             "bars"
         );
+    }
+}
+
+#[cfg(test)]
+mod fit_tests {
+    use super::*;
+
+    /// Runs `body` in a `width`×300 pt panel; returns every painted text
+    /// with its glyph extent and clip rect.
+    fn texts(
+        ctx: &egui::Context,
+        width: f32,
+        events: Vec<egui::Event>,
+        time: f64,
+        body: impl FnOnce(&mut Ui),
+    ) -> Vec<(String, Rect, Rect)> {
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(width, 300.0))),
+            time: Some(time),
+            events,
+            ..Default::default()
+        };
+        let out = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, body);
+        });
+        let mut found = Vec::new();
+        for clipped in &out.shapes {
+            if let egui::Shape::Text(t) = &clipped.shape {
+                let rows = t
+                    .galley
+                    .rows
+                    .iter()
+                    .fold(Rect::NOTHING, |a, r| a.union(r.rect));
+                found.push((
+                    t.galley.text().to_string(),
+                    rows.translate(t.pos.to_vec2()),
+                    clipped.clip_rect,
+                ));
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn control_strip_options_wrap_instead_of_running_under_its_keys() {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let groups = [
+            StripGroup {
+                label: "show",
+                options: ["concern", "all", "established", "listen", "time-wait"]
+                    .map(|o| (o.to_string(), Some(3)))
+                    .to_vec(),
+                active: 1,
+            },
+            StripGroup {
+                label: "group",
+                options: ["none", "host", "process"]
+                    .map(|o| (o.to_string(), None))
+                    .to_vec(),
+                active: 2,
+            },
+        ];
+        let keys = [Hint::ch('s', "sort"), Hint::ch('/', "filter")];
+        let mut height = 0.0;
+        let mut lines = Vec::new();
+        let found = texts(&ctx, 420.0, vec![], 0.0, |ui| {
+            lines = strip_lines(
+                ui,
+                &groups,
+                ui.available_width() - 120.0,
+                ui.available_width(),
+            );
+            let top = ui.cursor().top();
+            control_strip(ui, &groups, &keys);
+            height = ui.cursor().top() - top;
+        });
+        assert!(lines.len() > 1, "{lines:?}");
+        assert!(height > theme::STRIP_HEIGHT, "the strip grows to {height}");
+        // A label never ends a line without its first option.
+        for line in &lines {
+            if let Some((g, None)) = line.last() {
+                panic!("group {g}'s label ends a line: {lines:?}");
+            }
+        }
+        let visible: Vec<_> = found
+            .iter()
+            .filter(|(_, rect, clip)| clip.contains_rect(*rect))
+            .collect();
+        for option in ["concern 3", "time-wait 3", "process", "s", "/"] {
+            assert!(
+                visible.iter().any(|(t, _, _)| t.starts_with(option)),
+                "{option} not whole on screen"
+            );
+        }
+        for (i, (a, ra, _)) in visible.iter().enumerate() {
+            for (b, rb, _) in &visible[i + 1..] {
+                let hit = ra.intersect(*rb);
+                assert!(
+                    !(hit.width() > 1.0 && hit.height() > 1.0),
+                    "{a:?} over {b:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_table_narrower_than_its_columns_scrolls_sideways() {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let columns = [
+            Column::flex("name", 1.0, 120.0),
+            Column::px("middle", 160.0),
+            Column::px("last", 140.0),
+        ];
+        assert_eq!(
+            min_width(&columns),
+            120.0 + 160.0 + 140.0 + 2.0 * COLUMN_GAP
+        );
+        let table = |ui: &mut Ui| {
+            Table::new("wide", &columns, 3).show(ui, |_, c| Cell::text(format!("c{c}")), |_| None);
+        };
+        let last = |found: &[(String, Rect, Rect)]| {
+            found
+                .iter()
+                .find(|(t, _, _)| t == "last")
+                .map(|(_, rect, clip)| clip.contains_rect(*rect))
+        };
+        let mut time = 0.0;
+        let mut found = Vec::new();
+        for _ in 0..2 {
+            time += 0.1;
+            found = texts(&ctx, 300.0, vec![], time, table);
+        }
+        assert_eq!(
+            last(&found),
+            Some(false),
+            "the last column starts out of view"
+        );
+        let over = egui::Event::PointerMoved(pos2(150.0, 60.0));
+        let wheel = egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: vec2(-400.0, 0.0),
+            modifiers: Default::default(),
+        };
+        texts(&ctx, 300.0, vec![over, wheel], time + 0.1, table);
+        for step in 2..20 {
+            found = texts(&ctx, 300.0, vec![], time + step as f64 * 0.1, table);
+        }
+        assert_eq!(last(&found), Some(true), "and scrolls into it");
+        // Wide enough, nothing scrolls and every column fits.
+        let found = texts(&egui::Context::default(), 600.0, vec![], 0.0, table);
+        assert_eq!(last(&found), Some(true));
     }
 }
