@@ -59,6 +59,30 @@ mod tests {
             .collect()
     }
 
+    /// The postinst's one setcap call, as its line index and the words from
+    /// `setcap` on. Comments and the echoed hint mention the same command,
+    /// so they don't count.
+    fn postinst_setcap() -> (usize, Vec<&'static str>) {
+        let calls: Vec<(usize, Vec<&str>)> = POSTINST
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| {
+                let l = l.trim_start();
+                !l.starts_with('#') && !l.starts_with("echo ")
+            })
+            .filter_map(|(i, l)| {
+                let words: Vec<&str> = l
+                    .split(|c: char| c.is_whitespace() || c == ';')
+                    .filter(|w| !w.is_empty())
+                    .collect();
+                let at = words.iter().position(|w| *w == "setcap")?;
+                Some((i, words[at..].iter().take(3).copied().collect()))
+            })
+            .collect();
+        assert_eq!(calls.len(), 1, "the postinst should run setcap once");
+        calls.into_iter().next().unwrap()
+    }
+
     fn rpm_assets(manifest: &toml::Value) -> Vec<&toml::Value> {
         metadata(manifest, "generate-rpm")["assets"]
             .as_array()
@@ -208,9 +232,26 @@ mod tests {
 
         assert!(deb_assets(&manifest)
             .contains(&("target/release/netwatch-desktop".into(), exe.clone())));
+        let (line, call) = postinst_setcap();
+        assert_eq!(
+            call,
+            ["setcap", caps, exe.as_str()],
+            "the .deb's postinst runs `{}`, not `setcap {caps} {exe}`",
+            call.join(" ")
+        );
+        let lines: Vec<&str> = POSTINST.lines().collect();
+        let configure = lines
+            .iter()
+            .position(|l| *l == r#"if [ "$1" = "configure" ]; then"#)
+            .expect("the postinst has a configure branch");
+        let end = configure
+            + lines[configure..]
+                .iter()
+                .position(|l| *l == "fi")
+                .expect("the configure branch ends");
         assert!(
-            POSTINST.contains(&format!("setcap {caps} {exe}")),
-            "the .deb's postinst doesn't run `setcap {caps} {exe}`"
+            (configure..end).contains(&line),
+            "the postinst's setcap isn't in its configure branch"
         );
         let deb = metadata(&manifest, "deb");
         assert_eq!(
