@@ -194,12 +194,14 @@ pub fn exe_path() -> String {
         .unwrap_or_else(|_| "<path to netwatch-desktop>".into())
 }
 
-/// The exact grant for a platform. Linux grants only `cap_net_raw`: this
-/// build compiles netwatch without the eBPF backend, so `cap_bpf` and
+/// The exact grant for a platform, and the only one the app shows: first run
+/// and the packets tab both copy it. Linux grants only `cap_net_raw`, as
+/// `=ep` so the file carries that one capability and nothing inheritable:
+/// this build compiles netwatch without the eBPF backend, so `cap_bpf` and
 /// `cap_perfmon` would unlock nothing.
 pub fn grant_command(platform: &str, exe: &str) -> String {
     match platform {
-        "linux" => format!("sudo setcap 'cap_net_raw+eip' \"{exe}\""),
+        "linux" => format!("sudo setcap cap_net_raw=ep \"{exe}\""),
         "macos" => "sudo chgrp admin /dev/bpf* && sudo chmod g+rw /dev/bpf*".into(),
         _ => "https://npcap.com/#download".into(),
     }
@@ -970,7 +972,7 @@ mod tests {
         let cmd = grant_command("linux", "/opt/nw/netwatch-desktop");
         assert_eq!(
             cmd,
-            "sudo setcap 'cap_net_raw+eip' \"/opt/nw/netwatch-desktop\""
+            "sudo setcap cap_net_raw=ep \"/opt/nw/netwatch-desktop\""
         );
         assert!(!cmd.contains("which"));
     }

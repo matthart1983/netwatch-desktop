@@ -113,7 +113,7 @@ Without packet capture the app still works. You get interface counters, the sock
 On Linux, give the binary the raw-socket capability once. It attaches to the file, so run it again after every rebuild:
 
 ```sh
-sudo setcap cap_net_raw+eip ./target/release/netwatch-desktop
+sudo setcap cap_net_raw=ep ./target/release/netwatch-desktop
 ```
 
 The first-run sheet shows what is ready, what needs a grant, and the exact command for the running executable. It opens on first launch and again if a capability that was ready goes missing. Press `↵` to continue without capture.
