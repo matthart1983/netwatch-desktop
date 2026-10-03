@@ -122,6 +122,10 @@ pub fn nav_heading(ui: &mut Ui, text: &str) {
     ui_kit::section(ui, text);
 }
 
+/// The least space between a navigator row's name or detail and its value,
+/// so a long name shortens before it runs into the value.
+const NAV_GAP: f32 = 6.0;
+
 /// One navigator row: optional status dot, name, muted detail, right value.
 /// Returns true when clicked.
 #[allow(clippy::too_many_arguments)]
@@ -148,14 +152,16 @@ pub fn nav_row(
             .circle_filled(pos2(x + 3.0, rect.center().y), 3.0, color);
         x += 12.0;
     }
+    // The value's width plus its right margin.
     let value_w = if value.is_empty() {
         0.0
     } else {
         ui_kit::text_width(ui, value, FontId::monospace(theme::LABEL)) + 8.0
     };
+    let gap = if value.is_empty() { 0.0 } else { NAV_GAP };
     let text_rect = Rect::from_min_max(
         pos2(x, rect.top()),
-        pos2(rect.right() - value_w, rect.bottom()),
+        pos2(rect.right() - value_w - gap, rect.bottom()),
     );
     let w = ui_kit::paint_text(
         ui,
@@ -322,5 +328,78 @@ pub fn default_navigator(ui: &mut Ui, cx: &mut Cx, tab: Tab) {
             crumb,
             filter: Some(filter),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The visible extent of each text `nav_row` paints in a `width` pt
+    /// panel: glyphs clipped to where the row lets them show.
+    fn row_texts(width: f32, name: &str, detail: &str, value: &str) -> Vec<(String, Rect)> {
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        theme::apply(&ctx);
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(width, 100.0))),
+            ..Default::default()
+        };
+        let out = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                nav_row(ui, 0.0, None, name, detail, value, theme::muted(), false);
+            });
+        });
+        out.shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(t) => {
+                    let glyphs = t
+                        .galley
+                        .rows
+                        .iter()
+                        .fold(Rect::NOTHING, |a, r| a.union(r.rect));
+                    let shown = glyphs
+                        .translate(t.pos.to_vec2())
+                        .intersect(clipped.clip_rect);
+                    Some((t.galley.text().to_string(), shown))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A name or detail never runs into the value, however narrow the
+    /// navigator: "dns.slow_resolverfiring" and "this machine192.0.2.10"
+    /// were drawn touching.
+    #[test]
+    fn a_navigator_name_keeps_clear_of_its_value() {
+        let rows = [
+            ("dns.slow_resolver", "", "firing"),
+            ("this machine", "", "192.0.2.10"),
+            ("this machine", "", "203.0.113.255"),
+            ("browser", "2140", "3.4M"),
+        ];
+        for (name, detail, value) in rows {
+            for width in (90..=320).step_by(2) {
+                let texts = row_texts(width as f32, name, detail, value);
+                let value_at = texts
+                    .iter()
+                    .find(|(t, _)| t == value)
+                    .unwrap_or_else(|| panic!("no {value:?} at {width}: {texts:?}"))
+                    .1;
+                for (text, shown) in &texts {
+                    if text == value || !shown.is_positive() {
+                        continue;
+                    }
+                    assert!(
+                        shown.right() + NAV_GAP <= value_at.left() + 0.01,
+                        "{width} pt: {text:?} ends at {} and {value:?} starts at {}",
+                        shown.right(),
+                        value_at.left()
+                    );
+                }
+            }
+        }
     }
 }

@@ -52,6 +52,7 @@ The first public release. A fresh clone now builds from crates.io, text size has
 - Lite lost its severity word and colour for as long as a toast showed.
 - The egress promotion preview implied a process's block list would be deleted.
 - Dense printed a socket's decoded protocol in Rust's debug format. It now reads like "tls · example.com".
+- A navigator name could run into its value with no space between, as in `dns.slow_resolverfiring`. A long name now shortens first and keeps a gap.
 - `--graph-preview` showed real data from this machine. The processes inspector read the command line, user and cgroup of whichever real process had one of the preview's made-up PIDs, and the recorder and grant command showed the real export directory and binary path. A preview now reads none of them.
 
 ### Security
