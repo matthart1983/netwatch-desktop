@@ -46,6 +46,12 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG }}
 
+      # The workspace belongs to the runner's user and this container runs
+      # as root, so git refuses the repo as dubious ownership. checkout
+      # marks it safe only for its own step.
+      - name: Let git read the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: taiki-e/install-action@v2

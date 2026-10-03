@@ -128,7 +128,19 @@ cmd_check() {
 
 cmd_package() {
     [ -x "$BIN" ] || die "no $BIN; run release.sh build first"
-    export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct 2>/dev/null || date +%s)}
+    # The files inside the packages are dated from the commit, so the same
+    # commit packages the same way. In CI a git failure stops the release,
+    # since release.yml promises that date. Locally, with no git to ask,
+    # such as in a container without the repo's .git, they get the time now.
+    if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+        if ! SOURCE_DATE_EPOCH=$(git log -1 --format=%ct); then
+            [ -z "${CI:-}" ] || die "git can't read the commit to date the packages from"
+            SOURCE_DATE_EPOCH=$(date +%s)
+            echo "release.sh: no git commit to date the files from, so they carry the build time" >&2
+        fi
+    fi
+    export SOURCE_DATE_EPOCH
+    echo "files dated $(date -u -d "@$SOURCE_DATE_EPOCH" '+%Y-%m-%d %H:%M:%S UTC')"
     rm -rf dist "$TARGET/stage"
     mkdir -p dist "$TARGET/stage"
 
