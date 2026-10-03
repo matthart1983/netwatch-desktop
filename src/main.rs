@@ -1,7 +1,10 @@
-// Release builds on Windows are GUI programs, so launching one doesn't open a
-// console window next to it. The cost is that --help, --version and
-// --check-runtime print nothing there; a debug build still prints.
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Windows builds stay console programs, so starting one from Explorer opens
+// a console window beside the app. netwatch's collectors run netstat,
+// tasklist, ping, powershell and others every tick without CREATE_NO_WINDOW.
+// When a GUI program starts a console program, Windows opens a new console
+// window for it, so as a GUI program the app would flash windows every tick.
+// A console program's children share its console instead. A test keeps
+// `windows_subsystem` out until netwatch hides those windows.
 
 mod app;
 mod backend;
@@ -332,5 +335,20 @@ mod tests {
         assert!(validate(&args("--zoom 2")).is_ok());
         assert!(validate(&args("--zoom 1.5")).is_err());
         assert_eq!(super::dense_box("4"), Some(crate::dense::Panel::ALL[3]));
+    }
+    /// Windows builds stay console programs until netwatch starts its
+    /// helper programs with CREATE_NO_WINDOW; the comment at the top of
+    /// this file says why.
+    #[test]
+    fn windows_builds_stay_console_programs() {
+        let attributes = include_str!("main.rs")
+            .lines()
+            .filter(|l| l.trim_start().starts_with("#!["));
+        for attribute in attributes {
+            assert!(
+                !attribute.contains("windows_subsystem"),
+                "{attribute} makes netwatch's helper programs flash console windows"
+            );
+        }
     }
 }
