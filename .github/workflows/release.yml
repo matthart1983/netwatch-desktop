@@ -145,7 +145,7 @@ jobs:
             Debian or Ubuntu: `sudo apt install ./netwatch-desktop_*_amd64.deb`
             Fedora: `sudo dnf install ./netwatch-desktop-*.x86_64.rpm`
 
-            Both packages give the binary `cap_net_raw`, so the packets tab can capture without root. Take it away with `sudo setcap -r /usr/bin/netwatch-desktop`.
+            Both packages give the binary `cap_net_raw`, so the packets tab can capture without root. `sudo setcap -r /usr/bin/netwatch-desktop` takes it away, but every upgrade or reinstall of the package grants it again, so run it after each one. To keep capture off for good, use the tarball and don't grant it.
 
             Anything else:
             ```
