@@ -436,9 +436,13 @@ impl Packets {
         self.time_hidden = !ids.contains(&2);
         // Wheel scrolling reads back through the list: stop following the
         // tail instead of snapping to it on the next packet (as the TUI).
+        // Ctrl-scroll is text size, which egui still counts in the raw delta.
         if self.follow
             && ui.rect_contains_pointer(rect)
-            && ui.input(|i| i.raw_scroll_delta.y != 0.0 || i.smooth_scroll_delta.y != 0.0)
+            && ui.input(|i| {
+                let zoom = i.modifiers.ctrl || i.modifiers.command;
+                (i.raw_scroll_delta.y != 0.0 && !zoom) || i.smooth_scroll_delta.y != 0.0
+            })
         {
             self.follow = false;
             self.scroll_frames = 0;

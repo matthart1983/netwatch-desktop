@@ -596,6 +596,47 @@ fn wheel_scroll_turns_follow_off() {
 }
 
 #[test]
+fn ctrl_scroll_is_text_size_and_keeps_following() {
+    let s = fixture();
+    let ctx = ctx();
+    let mut screen = Packets::default();
+    let mut h = Harness::new();
+    frame(&ctx, &mut screen, &mut h, &s);
+    assert!(screen.follow);
+    for i in 0..10 {
+        let events = if i == 0 {
+            vec![
+                egui::Event::PointerMoved(egui::pos2(600.0, 200.0)),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: egui::vec2(0.0, 1.0),
+                    modifiers: egui::Modifiers::COMMAND,
+                },
+            ]
+        } else {
+            vec![]
+        };
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1252.0, 782.0),
+                )),
+                modifiers: egui::Modifiers::COMMAND,
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    screen.draw(ui, &mut h.cx(&s, None));
+                });
+            },
+        );
+    }
+    assert!(screen.follow);
+}
+
+#[test]
 fn peer_rows_and_ja4_names() {
     let s = Snapshot::empty();
     let rows = view::peer_rows(&s, "93.184.216.34", false);
