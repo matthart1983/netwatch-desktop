@@ -66,7 +66,7 @@ jobs:
   # macOS has never been built. Allowed to fail until it's green, then it
   # should be made required like linux.
   macos:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 40
     continue-on-error: true
     steps:
