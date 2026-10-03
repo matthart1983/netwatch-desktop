@@ -105,16 +105,21 @@ cmd_check() {
     [ "$(printf '%s\n%s\n' "$newest" "$GLIBC_FLOOR" | sort -V | tail -n 1)" = "$GLIBC_FLOOR" ] ||
         die "the binary needs glibc $newest, newer than $GLIBC_FLOOR"
 
+    # No `producer | grep -q` here. grep -q exits at the first match, the
+    # producer dies of SIGPIPE if it's still writing, and pipefail turns
+    # that into a failed pipeline, so the `if` reads a match as no match.
+    local needed
+    needed=$(readelf -d "$BIN" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p')
     echo "shared libraries:"
-    readelf -d "$BIN" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/  \1/p'
-    if readelf -d "$BIN" | grep -q 'NEEDED.*libpcap'; then
+    sed 's/^/  /' <<<"$needed"
+    if grep -q '^libpcap' <<<"$needed"; then
         die "the binary loads libpcap.so; it should have libpcap linked in"
     fi
 
     local path
     for path in "$HOME" "$PWD" "${CARGO_HOME:-$HOME/.cargo}"; do
-        if strings -n 6 "$BIN" | grep -qF "$path/"; then
-            strings -n 6 "$BIN" | grep -F "$path/" | head -n 5 >&2
+        if grep -qaF -- "$path/" "$BIN"; then
+            { strings -n 6 "$BIN" | grep -F -- "$path/" | head -n 5; } >&2 || true
             die "the binary still contains the build path $path"
         fi
     done
