@@ -73,18 +73,23 @@ impl Prefs {
 
     /// Reads `path` field by field: a value that doesn't fit its field
     /// keeps that field's default, so an unknown tab no longer resets the
-    /// text size too. A file that isn't TOML at all is copied to
-    /// `<path>.bak` before the next save replaces it.
+    /// text size too. A file that isn't TOML at all, UTF-8 included, is
+    /// copied to `<path>.bak` before the next save replaces it.
     pub fn load_from(path: &Path) -> (Self, Option<String>) {
-        let text = match std::fs::read_to_string(path) {
-            Ok(text) => text,
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Self::default(), None),
             Err(e) => {
                 let note = format!("{} unreadable · {e} · layout reset", path.display());
                 return (Self::default(), Some(note));
             }
         };
-        let Ok(table) = text.parse::<toml::Table>() else {
+        // TOML is UTF-8, so a stray Latin-1 byte from a hand edit makes
+        // the file not TOML, and it gets the same backup.
+        let table = std::str::from_utf8(&bytes)
+            .ok()
+            .and_then(|text| text.parse::<toml::Table>().ok());
+        let Some(table) = table else {
             let mut backup = path.as_os_str().to_owned();
             backup.push(".bak");
             let backup = PathBuf::from(backup);
@@ -233,6 +238,21 @@ mod tests {
         // A missing file is a first launch, not an error.
         let (prefs, note) = Prefs::load_from(&dir.path().join("missing.toml"));
         assert_eq!((prefs, note), (Prefs::default(), None));
+    }
+
+    #[test]
+    fn a_file_that_is_not_utf8_is_kept_as_bak_before_the_next_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("desktop.toml");
+        let bytes = b"zoom = 2.0\ntheme = \"caf\xe9\"\n";
+        std::fs::write(&path, bytes).unwrap();
+        let (prefs, note) = Prefs::load_from(&path);
+        assert_eq!(prefs, Prefs::default());
+        let note = note.expect("a toast explains the reset");
+        assert!(note.contains("desktop.toml.bak"), "{note}");
+        prefs.save_to(&path).unwrap();
+        let backup = dir.path().join("desktop.toml.bak");
+        assert_eq!(std::fs::read(backup).unwrap(), bytes);
     }
 
     #[test]
