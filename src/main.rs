@@ -32,7 +32,8 @@ const USAGE: &str = "netwatch-desktop — desktop workbench for netwatch
 
 usage: netwatch-desktop [options]
 
-  --demo                 replayed diagnose scenario and seeded packets
+  --demo                 diagnose demo scenario and seeded packets on top of
+                         this machine's live data, which stays on screen
   --tab <name>           start on a tab (dashboard, connections, interfaces,
                          packets, stats, topology, timeline, processes,
                          diagnose, egress)
@@ -300,6 +301,17 @@ mod tests {
             .chain(line.split_whitespace())
             .map(String::from)
             .collect()
+    }
+    /// --demo adds to live data rather than replacing it, so its help
+    /// mustn't read as if the screen were all made up.
+    #[test]
+    fn help_says_demo_keeps_live_data() {
+        let demo = super::USAGE
+            .split("\n  --")
+            .find(|entry| entry.starts_with("demo "))
+            .unwrap();
+        assert!(demo.contains("live data"), "{demo}");
+        assert!(!demo.contains("replayed"), "{demo}");
     }
     #[test]
     fn flags_are_checked() {
