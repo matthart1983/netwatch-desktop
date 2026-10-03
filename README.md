@@ -101,7 +101,7 @@ cd netwatch-desktop
 cargo build --release --locked
 ```
 
-You need Rust 1.88 or newer and the same system libraries netwatch needs, plus what eframe needs to open a window.
+You need Rust 1.95 or newer. Debian and Ubuntu package an older one, so install it with [rustup](https://rustup.rs). You also need the same system libraries netwatch needs, plus what eframe needs to open a window.
 
 On Fedora:
 

@@ -14,13 +14,14 @@ The first public release. A fresh clone now builds from crates.io, text size has
 - Blocked egress destinations. netwatch 0.35 policies can block destinations globally or per process and choose an alert mode. A blocked destination reads `blocked` in red, comes first in the status strip, badge and title chip, shows in connections and processes, and offers no allow action. Promotion leaves blocked destinations out, and removing a rule names the block entries that go with it.
 - A narrow navigator that keeps the tab names, and a digit rail that scrolls, with a scroll bar that stays drawn wherever tabs or table columns are hidden.
 - Screen readers get each navigator item's name and whether it's the current tab.
-- CI on Linux, macOS and Windows, with `cargo audit` and a build against netwatch's main branch.
+- CI on Linux, macOS and Windows, with `cargo audit`, a build on the oldest supported Rust and a build against netwatch's main branch.
 - The render matrix: every tab, sheet and view at every text size on three common screens and each view's smallest window, rendered headless in CI.
 - README screenshots drawn headless from synthetic data, with a test that fails if any shows a real address or this machine's names. A new screenshot shows the text size controls at 150%.
 - SECURITY.md, CONTRIBUTING.md, this changelog, issue templates, and crates.io metadata.
 
 ### Changed
 - Builds against `netwatch-tui` 0.35.1 from crates.io, pinned exactly. A sibling netwatch checkout is no longer needed.
+- Building needs Rust 1.95 or newer, because netwatch-tui 0.35.1 uses standard library calls that arrived in 1.95.
 - Text size has one range, 100% to 300%, and one default, 115%, at startup and at runtime. It used to be 75% to 250% at startup, 20% to 500% at runtime, and `ctrl 0` went to 100%.
 - Capture asks for `cap_net_raw=ep` only, on first run and in the packets tab. The packets tab used to suggest `cap_bpf` and `cap_perfmon` as well, which this build can't use.
 - Exports are created 0600 in a 0700 directory and `desktop.toml` is 0600. With no home directory, exports refuse instead of writing to `/tmp`.

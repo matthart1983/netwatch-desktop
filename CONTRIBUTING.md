@@ -4,7 +4,7 @@ Thanks for helping. This file covers building, the checks a pull request has to 
 
 ## Getting started
 
-Install Rust 1.88 or newer and the system libraries listed under [Building](README.md#building) in the README, then:
+Install Rust 1.95 or newer with [rustup](https://rustup.rs) (Debian and Ubuntu package an older one) and the system libraries listed under [Building](README.md#building) in the README, then:
 
 ```sh
 git clone https://github.com/matthart1983/netwatch-desktop

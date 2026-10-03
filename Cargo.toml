@@ -2,9 +2,12 @@
 name = "netwatch-desktop"
 version = "0.1.1"
 edition = "2021"
-# image 0.25.10 and time 0.3.55 need 1.88. clippy's incompatible_msrv lint
-# flags any std API this crate uses that is newer than this.
-rust-version = "1.88"
+# netwatch-tui 0.35.1 declares no rust-version, but it calls
+# AtomicUsize::try_update (stable in 1.95) on every platform and
+# File::try_lock (1.89) on unix. clippy's incompatible_msrv lint checks only
+# this crate's own code against this, not its dependencies; CI's msrv job
+# builds everything with 1.95.
+rust-version = "1.95"
 authors = ["Matt Hartley <matthew.t.hartley@gmail.com>"]
 description = "See which programs on this computer use the network and what's wrong with it. A desktop app built on netwatch."
 license = "MIT"

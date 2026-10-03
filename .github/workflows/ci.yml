@@ -74,6 +74,28 @@ jobs:
       - name: Audit dependencies
         run: cargo audit
 
+  # Builds on the oldest Rust that Cargo.toml's rust-version promises.
+  # clippy's incompatible_msrv lint only checks this crate's code, so a
+  # dependency that needs a newer std, as netwatch-tui 0.35.1 needs 1.95, only
+  # shows up here. Raise the toolchain with rust-version.
+  msrv:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95"
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpcap-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+
+      - name: Check
+        run: cargo check --locked --all-targets
+
   # macOS has never been built. Allowed to fail until it's green, then it
   # should be made required like linux.
   macos:
