@@ -554,3 +554,27 @@ fn tables_fit_their_panels_at_minimum_size() {
         assert!(point.x < size.x - 8.0, "{needle} at {point:?}");
     }
 }
+#[test]
+fn the_selected_socket_names_its_app_protocol_in_words() {
+    let mut s = crate::preview::snapshot(Instant::now(), 0);
+    let conns = Arc::make_mut(&mut s.connections);
+    for c in conns.iter_mut() {
+        c.app_protocol = Some(netwatch::dpi::AppProtocol::Tls {
+            sni: Some("www.example.com".into()),
+            alpn: Some("h2".into()),
+            ech: false,
+            ja4: None,
+        });
+    }
+    let mut h = Harness::new();
+    let mut out = h.render(&s, egui::vec2(1280.0, 760.0), vec![]);
+    for _ in 0..2 {
+        out = h.render(&s, egui::vec2(1280.0, 760.0), vec![]);
+    }
+    text_point(&out, "tls · www.example.com");
+    let debug = out
+        .shapes
+        .iter()
+        .any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().contains("Tls {")));
+    assert!(!debug, "the socket line prints the protocol's Debug form");
+}

@@ -111,6 +111,16 @@ fn sni(c: &Connection) -> Option<&str> {
     }
 }
 
+/// `tls · chat.example.net`: the decoded protocol and, when it named one,
+/// the server.
+pub fn app_summary(c: &Connection) -> Option<String> {
+    let tag = app_tag(c)?;
+    Some(match sni(c) {
+        Some(server) => format!("{tag} · {server}"),
+        None => tag.to_string(),
+    })
+}
+
 /// `estab`, `listen`, `time-wait` — the lowercase short state the table shows.
 pub fn short_state(state: &str) -> String {
     match state {

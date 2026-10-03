@@ -367,6 +367,30 @@ fn addresses_filters_and_crumbs() {
 }
 
 #[test]
+fn app_summary_names_the_protocol_and_the_server() {
+    use netwatch::dpi::AppProtocol;
+    let mut c = conn(
+        Some("browser"),
+        Some(2140),
+        "192.0.2.10:48122",
+        "198.51.100.20:443",
+        "ESTABLISHED",
+    );
+    assert_eq!(app_summary(&c), None);
+    c.app_protocol = Some(AppProtocol::Tls {
+        sni: Some("www.example.com".into()),
+        alpn: Some("h2".into()),
+        ech: false,
+        ja4: Some("t13d1516h2_8daaf6152771_02713d6af862".into()),
+    });
+    assert_eq!(app_summary(&c).as_deref(), Some("tls · www.example.com"));
+    c.app_protocol = Some(AppProtocol::Ssh {
+        version: "SSH-2.0-OpenSSH_9.9".into(),
+    });
+    assert_eq!(app_summary(&c).as_deref(), Some("ssh"));
+}
+
+#[test]
 fn unattributed_never_shows_pid_zero() {
     let s = fixture();
     let row = rows(&s).into_iter().find(|r| r.unattributed).unwrap();
