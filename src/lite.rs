@@ -173,9 +173,40 @@ impl Lite {
                     theme::muted(),
                 ));
                 ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                    // Lite has no title-bar menu or footer room for text
+                    // size, so it gets its own ☰.
+                    ui.menu_button(ui_kit::mono("☰", theme::DATA, theme::text2()), |ui| {
+                        ui.set_min_width(220.0);
+                        if let Some(change) = crate::zoom::menu(ui, ui.ctx().zoom_factor()) {
+                            cx.go(Nav::Zoom(change));
+                        }
+                        ui_kit::rule(ui);
+                        if ui.button("full view  L").clicked() {
+                            cx.go(Nav::SetView("full"));
+                            ui.close_menu();
+                        }
+                    });
+                    ui.add_space(6.0);
                     if cx.paused {
                         ui_kit::chip(ui, "⏸ paused", theme::raised());
                         ui.add_space(6.0);
+                    }
+                    // Toasts (a text-size change, an export) take the
+                    // status line's place while they show.
+                    if let Some(toast) = cx.toast.as_ref().filter(|t| t.fresh()) {
+                        ui.add(
+                            egui::Label::new(ui_kit::mono(
+                                &toast.text,
+                                theme::LABEL,
+                                if toast.ok {
+                                    theme::good()
+                                } else {
+                                    theme::error()
+                                },
+                            ))
+                            .truncate(),
+                        );
+                        return;
                     }
                     match crate::shell::issue_strip(s) {
                         Some(strip) => {

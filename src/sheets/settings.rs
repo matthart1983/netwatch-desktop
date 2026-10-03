@@ -1,16 +1,19 @@
 //! Settings sheet (spec §4, mock 2j): an 860 px sheet over the current
-//! screen, grouped like config.toml. Enum and boolean rows cycle on ←→, text
-//! and number rows edit inline on ↵, a changed row wears a warn rail until
-//! saved, and `S` saves explicitly. Below the rows, the runtime capability
-//! report says what actually applied.
+//! screen. "this app" comes first and applies at once (text size, kept in
+//! desktop.toml); the other groups follow config.toml, which the terminal
+//! app shares. Enum and boolean rows cycle on ←→, text and number rows edit
+//! inline on ↵, a changed row wears a warn rail until saved, and `S` saves
+//! explicitly. Below the rows, the runtime capability report says what
+//! actually applied.
 use crate::backend::{Command, Snapshot};
-use crate::shell::{Cx, Hint, Key, Sheet, SheetKey, Toast};
+use crate::shell::{Cx, Hint, Key, Nav, Sheet, SheetKey, Toast};
 use crate::{theme, ui_kit};
 use egui::{pos2, vec2, Align, Color32, FontId, Rect, Sense, Stroke, Ui};
 use netwatch::config::NetwatchConfig;
 use netwatch::runtime::capabilities::{Capability, State};
 
-pub const GROUPS: [&str; 6] = [
+pub const GROUPS: [&str; 7] = [
+    "this app",
     "appearance",
     "refresh & capture",
     "geoip",
@@ -35,6 +38,9 @@ pub enum Kind {
     Number,
     /// Edited on ↵; free text.
     Text,
+    /// This app's text size: ←→ step through the presets and apply at once.
+    /// Saved in desktop.toml, not config.toml.
+    TextSize,
 }
 
 /// One row: group index, label, config key, kind.
@@ -55,72 +61,73 @@ const fn row(group: usize, label: &'static str, key: &'static str, kind: Kind) -
     }
 }
 
-pub const ROWS: [Row; 24] = [
+pub const ROWS: [Row; 25] = [
+    row(0, "text size", "zoom", Kind::TextSize),
     row(
-        0,
+        1,
         "theme",
         "theme",
         Kind::Enum(netwatch::theme::THEME_NAMES),
     ),
     row(
-        0,
+        1,
         "view",
         "view",
         Kind::Enum(netwatch::app::VIEW_MODE_NAMES),
     ),
-    row(0, "default tab", "default_tab", Kind::Enum(TAB_NAMES)),
+    row(1, "default tab", "default_tab", Kind::Enum(TAB_NAMES)),
     row(
-        0,
+        1,
         "graph style",
         "graph_style",
         Kind::Enum(netwatch::graph::GRAPH_STYLE_NAMES),
     ),
-    row(0, "graph fade", "graph_fade", Kind::Bool),
+    row(1, "graph fade", "graph_fade", Kind::Bool),
     row(
-        0,
+        1,
         "groups start folded",
         "groups_start_collapsed",
         Kind::Bool,
     ),
-    row(1, "refresh rate", "refresh_rate_ms", Kind::Number),
-    row(1, "capture interface", "capture_interface", Kind::Text),
-    row(1, "bpf filter", "bpf_filter", Kind::Text),
-    row(1, "packet follow", "packet_follow", Kind::Bool),
+    row(2, "refresh rate", "refresh_rate_ms", Kind::Number),
+    row(2, "capture interface", "capture_interface", Kind::Text),
+    row(2, "bpf filter", "bpf_filter", Kind::Text),
+    row(2, "packet follow", "packet_follow", Kind::Bool),
     row(
-        1,
+        2,
         "timeline window",
         "timeline_window",
         Kind::Enum(TIMELINE_WINDOWS),
     ),
-    row(1, "tls keylog path", "tls_keylog_path", Kind::Text),
-    row(2, "show geo", "show_geo", Kind::Bool),
-    row(2, "geoip database", "geoip_db", Kind::Text),
-    row(2, "geoip asn database", "geoip_asn_db", Kind::Text),
-    row(2, "geoip online", "geoip_online", Kind::Bool),
+    row(2, "tls keylog path", "tls_keylog_path", Kind::Text),
+    row(3, "show geo", "show_geo", Kind::Bool),
+    row(3, "geoip database", "geoip_db", Kind::Text),
+    row(3, "geoip asn database", "geoip_asn_db", Kind::Text),
+    row(3, "geoip online", "geoip_online", Kind::Bool),
     row(
-        3,
+        4,
         "bandwidth threshold",
         "alerts.bandwidth_threshold",
         Kind::Number,
     ),
     row(
-        3,
+        4,
         "port scan threshold",
         "alerts.port_scan_threshold",
         Kind::Number,
     ),
     row(
-        3,
+        4,
         "port scan window",
         "alerts.port_scan_window_secs",
         Kind::Number,
     ),
-    row(4, "ai insights", "insights_enabled", Kind::Bool),
-    row(4, "insights model", "insights_model", Kind::Text),
-    row(4, "insights endpoint", "insights_endpoint", Kind::Text),
-    row(5, "sandbox", "sandbox", Kind::Enum(SANDBOX_MODES)),
+    row(5, "ai insights", "insights_enabled", Kind::Bool),
+    row(5, "insights model", "insights_model", Kind::Text),
+    row(5, "insights endpoint", "insights_endpoint", Kind::Text),
+    row(6, "sandbox", "sandbox", Kind::Enum(SANDBOX_MODES)),
     row(
-        5,
+        6,
         "egress re-warn",
         "egress_violation_cooldown_secs",
         Kind::Number,
@@ -377,6 +384,10 @@ fn hint_note(cfg: &NetwatchConfig, row: &Row) -> (String, &'static str) {
         }
         "sandbox" => (list(SANDBOX_MODES), "next start"),
         "egress_violation_cooldown_secs" => ("0 = every refresh".into(), ""),
+        "zoom" => (
+            "100–300% · the whole window · saved in desktop.toml".into(),
+            "applies now",
+        ),
         _ => (String::new(), ""),
     }
 }
@@ -454,6 +465,21 @@ impl Settings {
         cx.run(Command::SaveConfig(Box::new(cfg.clone())));
         self.original = Some(cfg);
         self.error = None;
+    }
+
+    /// ←→ on the selected row: the next value, or for text size the next
+    /// preset, applied now.
+    fn cycle_selected(&mut self, forward: bool, cx: &mut Cx) {
+        let row = ROWS[self.selected];
+        if row.kind == Kind::TextSize {
+            cx.go(Nav::Zoom(if forward {
+                crate::zoom::Change::Larger
+            } else {
+                crate::zoom::Change::Smaller
+            }));
+        } else if let Some(cfg) = self.edited.as_mut() {
+            cycle(cfg, &row, forward);
+        }
     }
 
     fn sandbox_note(&self) -> bool {
@@ -641,14 +667,18 @@ impl Settings {
                     self.focus_requested = true;
                 }
             } else {
-                let (text, placeholder) = display(&cfg, row, cx.s);
+                let (text, placeholder) = if row.kind == Kind::TextSize {
+                    (crate::zoom::label(ui.ctx().zoom_factor()), false)
+                } else {
+                    display(&cfg, row, cx.s)
+                };
                 let color = match row.kind {
                     Kind::Bool if text == "on" => theme::good(),
                     Kind::Bool => theme::muted(),
                     _ if placeholder => theme::text2(),
                     _ => theme::text(),
                 };
-                let cyclable = matches!(row.kind, Kind::Enum(_) | Kind::Bool);
+                let cyclable = matches!(row.kind, Kind::Enum(_) | Kind::Bool | Kind::TextSize);
                 if selected && cyclable {
                     let left = Rect::from_min_size(value_rect.min, vec2(16.0, 29.0));
                     let text_w = ui_kit::text_width(ui, &text, FontId::monospace(theme::DATA));
@@ -763,9 +793,7 @@ impl Settings {
             }
         }
         if let Some(forward) = cycle_click {
-            if let Some(cfg) = self.edited.as_mut() {
-                cycle(cfg, &ROWS[self.selected], forward);
-            }
+            self.cycle_selected(forward, cx);
         } else if let Some(i) = clicked_row {
             if i != self.selected {
                 self.select(i);
@@ -1026,17 +1054,9 @@ impl Sheet for Settings {
                     self.select(first);
                 }
             }
-            Key::Left | Key::Right => {
-                if let Some(cfg) = self.edited.as_mut() {
-                    cycle(cfg, &row, key == Key::Right);
-                }
-            }
+            Key::Left | Key::Right => self.cycle_selected(key == Key::Right, cx),
             Key::Enter | Key::Space => match row.kind {
-                Kind::Bool | Kind::Enum(_) => {
-                    if let Some(cfg) = self.edited.as_mut() {
-                        cycle(cfg, &row, true);
-                    }
-                }
+                Kind::Bool | Kind::Enum(_) | Kind::TextSize => self.cycle_selected(true, cx),
                 Kind::Text | Kind::Number => {
                     if key == Key::Enter {
                         let value = self
@@ -1162,9 +1182,10 @@ mod tests {
         let counts: Vec<usize> = (0..GROUPS.len())
             .map(|g| ROWS.iter().filter(|r| r.group == g).count())
             .collect();
-        assert_eq!(counts, vec![6, 6, 4, 3, 3, 2]);
+        assert_eq!(counts, vec![1, 6, 6, 4, 3, 3, 2]);
         let cfg = NetwatchConfig::default();
-        for row in ROWS {
+        // Text size lives in desktop.toml; every other row is a config key.
+        for row in ROWS.iter().filter(|r| r.kind != Kind::TextSize) {
             let v = get(&cfg, row.key);
             let mut copy = cfg.clone();
             // Every row accepts its own current value back.
@@ -1203,9 +1224,10 @@ mod tests {
             theme: "paper".into(),
             ..Default::default()
         };
-        cycle(&mut cfg, &ROWS[0], true);
+        let theme = ROWS.iter().find(|r| r.key == "theme").unwrap();
+        cycle(&mut cfg, theme, true);
         assert_eq!(cfg.theme, "dark");
-        cycle(&mut cfg, &ROWS[0], false);
+        cycle(&mut cfg, theme, false);
         assert_eq!(cfg.theme, "paper");
         let fade = ROWS.iter().find(|r| r.key == "graph_fade").unwrap();
         let before = cfg.graph_fade;
@@ -1219,8 +1241,9 @@ mod tests {
         let mut h = Harness::new();
         let mut sheet = Settings::default();
         // Cycle theme → one change.
+        sheet.key(Key::Down, &mut h.cx(&s));
         sheet.key(Key::Right, &mut h.cx(&s));
-        assert_eq!(sheet.changed(), vec![0]);
+        assert_eq!(sheet.changed(), vec![1]);
         // Tab jumps to refresh & capture; ↵ opens the field; invalid value stays open.
         sheet.key(Key::Tab, &mut h.cx(&s));
         assert_eq!(ROWS[sheet.selected].key, "refresh_rate_ms");
@@ -1256,6 +1279,38 @@ mod tests {
         sheet.key(Key::Right, &mut h.cx(&s));
         assert_eq!(sheet.key(Key::Esc, &mut h.cx(&s)), SheetKey::Close);
         assert_eq!(h.toast.as_ref().unwrap().text, "discarded 1 change");
+    }
+
+    #[test]
+    fn text_size_comes_first_and_applies_without_a_save() {
+        let s = populated();
+        let mut h = Harness::new();
+        let mut sheet = Settings::default();
+        assert_eq!(GROUPS[0], "this app");
+        assert_eq!(ROWS[sheet.selected].key, "zoom");
+        sheet.key(Key::Right, &mut h.cx(&s));
+        sheet.key(Key::Left, &mut h.cx(&s));
+        sheet.key(Key::Enter, &mut h.cx(&s));
+        use crate::zoom::Change;
+        assert_eq!(
+            h.nav,
+            vec![
+                Nav::Zoom(Change::Larger),
+                Nav::Zoom(Change::Smaller),
+                Nav::Zoom(Change::Larger)
+            ]
+        );
+        // Nothing for S to save, and esc discards nothing.
+        assert!(sheet.changed().is_empty());
+        assert!(h.commands.is_empty());
+        let t = texts(&render(&mut sheet, &s, &mut h));
+        assert!(t.iter().any(|x| x == "this app"), "{t:?}");
+        assert!(t.iter().any(|x| x == "text size"), "{t:?}");
+        // The render context runs at zoom 1.0.
+        assert!(t.iter().any(|x| x == "100%"), "{t:?}");
+        assert!(t.iter().any(|x| x == "applies now"), "{t:?}");
+        assert_eq!(sheet.key(Key::Esc, &mut h.cx(&s)), SheetKey::Close);
+        assert!(h.toast.is_none());
     }
 
     #[test]

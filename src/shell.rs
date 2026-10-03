@@ -6,7 +6,7 @@
 //! [`Hint`]s and a click dispatches the same [`Key`] the keyboard would.
 use crate::backend::{Command, Snapshot};
 use egui::{Color32, Ui};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -228,6 +228,8 @@ pub enum Nav {
     /// Keep the lite window above other windows.
     ToggleLiteOnTop,
     OpenFirstRun,
+    /// Change the text size (whole-interface zoom); applies now and saves.
+    Zoom(crate::zoom::Change),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -251,6 +253,10 @@ impl Toast {
             text: text.into(),
             at: Instant::now(),
         }
+    }
+    /// Still showing: successes fade after 8 s, failures stay 20 s.
+    pub fn fresh(&self) -> bool {
+        self.at.elapsed() < Duration::from_secs(if self.ok { 8 } else { 20 })
     }
 }
 

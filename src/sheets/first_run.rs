@@ -1,10 +1,10 @@
 //! First run · permissions (spec §6, mock 2l). Shown once, and again when a
-//! previously granted capability is lost. Left: purpose, platform tabs, the
-//! measured capability checklist, the exact grant for the running executable
-//! and the way on. Right: the reference permissions matrix, optional inputs
-//! and what leaves the host.
+//! previously granted capability is lost. Left: text size, purpose, platform
+//! tabs, the measured capability checklist, the exact grant for the running
+//! executable and the way on. Right: the reference permissions matrix,
+//! optional inputs and what leaves the host.
 use crate::backend::Snapshot;
-use crate::shell::{Cx, Hint, Key, Sheet, SheetKey, Toast};
+use crate::shell::{Cx, Hint, Key, Nav, Sheet, SheetKey, Toast};
 use crate::{theme, ui_kit};
 use egui::{pos2, vec2, Align, Color32, FontFamily, FontId, Rect, RichText, Sense, Stroke, Ui};
 use netwatch::runtime::capabilities::{CapabilitySnapshot, State};
@@ -20,6 +20,15 @@ pub const MATRIX: [(&str, bool, bool); 5] = [
     ("network configuration", true, true),
     ("health probes (icmp)", false, true),
     ("packet capture", false, true),
+];
+
+/// The text sizes offered before anything else. Each applies at once, so
+/// the sheet itself is the preview; ☰, the palette and settings have all
+/// eight.
+pub const TEXT_SIZES: [(&str, f32); 3] = [
+    ("Normal", crate::zoom::DEFAULT),
+    ("Large", 1.5),
+    ("Larger", 2.0),
 ];
 
 pub const PRIVACY: &str = "collection and analysis are local; active health checks send DNS, \
@@ -223,6 +232,28 @@ tcp metrics are not available on windows."
     }
 }
 
+/// A selectable tab in a row of choices (platform, text size).
+fn choice(ui: &mut Ui, text: &str, size: f32, active: bool) -> bool {
+    let galley =
+        ui.fonts(|f| f.layout_no_wrap(text.to_string(), FontId::monospace(size), theme::text()));
+    let (rect, response) = ui.allocate_exact_size(galley.size() + vec2(16.0, 6.0), Sense::click());
+    if active {
+        ui.painter().rect_filled(rect, 3.0, theme::raised());
+    }
+    ui.painter().galley(
+        rect.min + vec2(8.0, 3.0),
+        galley,
+        if active {
+            theme::text()
+        } else {
+            theme::text2()
+        },
+    );
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
+}
+
 fn sans(text: impl Into<String>, size: f32, color: Color32) -> RichText {
     RichText::new(text)
         .family(FontFamily::Name(theme::SANS.into()))
@@ -291,6 +322,18 @@ impl FirstRun {
                 ));
             });
         });
+        ui.horizontal(|ui| {
+            ui.label(ui_kit::mono("text size", theme::LABEL, theme::muted()));
+            ui.add_space(4.0);
+            let now = crate::zoom::percent(ui.ctx().zoom_factor());
+            for (name, size) in TEXT_SIZES {
+                let text = format!("{name} {}", crate::zoom::label(size));
+                if choice(ui, &text, theme::DATA, now == crate::zoom::percent(size)) {
+                    cx.go(Nav::Zoom(crate::zoom::Change::To(size)));
+                }
+            }
+        });
+        ui.add_space(4.0);
         ui.add(
             egui::Label::new(sans(
                 "Identifies the process behind connections, reads TLS you hold the keys to, and \
@@ -306,32 +349,7 @@ impl FirstRun {
             ui.label(ui_kit::mono("platform", theme::LABEL, theme::muted()));
             ui.add_space(4.0);
             for (i, name) in PLATFORMS.iter().enumerate() {
-                let active = i == self.platform;
-                let galley = ui.fonts(|f| {
-                    f.layout_no_wrap(
-                        name.to_string(),
-                        FontId::monospace(theme::LABEL),
-                        theme::text(),
-                    )
-                });
-                let (rect, response) =
-                    ui.allocate_exact_size(galley.size() + vec2(16.0, 6.0), Sense::click());
-                if active {
-                    ui.painter().rect_filled(rect, 3.0, theme::raised());
-                }
-                ui.painter().galley(
-                    rect.min + vec2(8.0, 3.0),
-                    galley,
-                    if active {
-                        theme::text()
-                    } else {
-                        theme::text2()
-                    },
-                );
-                if response
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .clicked()
-                {
+                if choice(ui, name, theme::LABEL, i == self.platform) {
                     self.platform = i;
                 }
             }

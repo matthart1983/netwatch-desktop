@@ -17,6 +17,7 @@ mod telemetry;
 mod theme;
 mod timeline;
 mod ui_kit;
+mod zoom;
 
 use app::{DesktopApp, Tab};
 use backend::Backend;

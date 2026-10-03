@@ -1,6 +1,7 @@
 //! Layout state that persists per profile and restores on launch (spec §9):
-//! tab, view, theme, dock and navigator state, lite window, per-tab control
-//! choices and sort. Stored beside the netwatch config as `desktop.toml`.
+//! tab, view, theme, text size, dock and navigator state, lite window,
+//! per-tab control choices and sort. Stored beside the netwatch config as
+//! `desktop.toml`.
 use crate::shell::Tab;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -13,9 +14,8 @@ pub struct Prefs {
     /// full · lite · dense
     pub view: String,
     pub theme: String,
-    /// Whole-interface zoom (Ctrl + / Ctrl − in every view). The
-    /// spec's 12px type scale reads small on high-DPI laptop panels, so the
-    /// default sits above 1.
+    /// Text size: the whole-interface zoom shared by every view, kept in
+    /// `zoom::MIN..=zoom::MAX` (see `crate::zoom`).
     pub zoom: f32,
     /// Dense box 4 grouping: none · host · process.
     pub dense_group: String,
@@ -39,7 +39,7 @@ impl Default for Prefs {
             tab: Tab::Dashboard,
             view: "full".into(),
             theme: "dark".into(),
-            zoom: 1.15,
+            zoom: crate::zoom::DEFAULT,
             dense_group: "process".into(),
             show_dock: true,
             dock_height: crate::theme::DOCK_HEIGHT,
