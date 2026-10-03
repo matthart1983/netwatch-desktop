@@ -270,3 +270,26 @@ fn policy_state_counts_blocked_destinations() {
         ("no rule".to_string(), theme::text())
     );
 }
+
+/// A preview's PIDs are made up, so the inspector reads nothing from /proc
+/// for them, even when a real process has the same PID.
+#[test]
+fn a_preview_reads_no_process_identity() {
+    let real = std::process::id();
+    let mut screen = Processes::default();
+    let mut s = crate::preview::snapshot(std::time::Instant::now(), 0);
+    let info = screen.identity(&s, Some(real));
+    assert_eq!(
+        info,
+        procinfo::unavailable("not read in graph preview"),
+        "{info:?}"
+    );
+    s.synthetic = false;
+    let info = screen.identity(&s, Some(real));
+    if cfg!(target_os = "linux") {
+        assert!(
+            info.cmdline.is_ok(),
+            "a live snapshot reads /proc: {info:?}"
+        );
+    }
+}

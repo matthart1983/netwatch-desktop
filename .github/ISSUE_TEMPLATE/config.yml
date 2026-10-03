@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/matthart1983/netwatch-desktop/security/advisories/new
+    about: Please report vulnerabilities privately, not in a public issue.
+  - name: A problem in netwatch itself
+    url: https://github.com/matthart1983/netwatch/issues
+    about: Packet parsing, collectors and the diagnose rules live in netwatch.

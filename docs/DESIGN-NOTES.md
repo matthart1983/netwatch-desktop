@@ -1,10 +1,10 @@
 # Desktop implementation decisions
 
-These amendments resolve contradictions found in the 2026-09-13 desktop design bundle (`~/Downloads/NetWatch desktop application design.zip`). The HTML files remain visual references. Existing Netwatch rule semantics and runtime capabilities take precedence over illustrative mock data and commands.
+These amendments resolve contradictions found in the desktop design bundle of 2026-09-13, a set of HTML mocks kept outside this repository. The mocks remain visual references. Existing Netwatch rule semantics and runtime capabilities take precedence over illustrative mock data and commands.
 
 ## Shared implementation
 
-The desktop imports `netwatch-tui` by path. It constructs the existing `App`, starts its runtime on a dedicated thread, and publishes immutable snapshots to egui. Capture, process attribution, TCP state, interface selection, health probing, baselines, diagnostic rules, egress learning and shutdown come from that runtime. Keep these implementations shared; introduce a narrower runtime facade later only if App coupling obstructs an actual feature.
+The desktop imports `netwatch-tui` from crates.io, pinned to an exact version. It constructs the existing `App`, starts its runtime on a dedicated thread, and publishes immutable snapshots to egui. Capture, process attribution, TCP state, interface selection, health probing, baselines, diagnostic rules, egress learning and shutdown come from that runtime. Keep these implementations shared; introduce a narrower runtime facade later only if App coupling obstructs an actual feature.
 
 The GUI must not apply worker sandbox restrictions to its display thread. Runtime startup applies policy on its own thread, and errors are displayed rather than silently disabling configured protection.
 
@@ -34,7 +34,7 @@ Where the crate cannot supply what a mock shows, the slot stays and the reason i
 - ASN per hop, interface driver/qdisc/offload/uptime, per-interface gateway/DNS, TLS version per packet, and tcp_info pacing/delivered/lost are not collected.
 - Traceroute runs one target at a time with no history; superseded hops and "since" deltas appear only after a retrace in this session. Timeline retransmission and recorder history are kept locally from app start.
 - Egress "keep warning" is a desktop-side dismissal for the re-warn interval; single-destination allow merges one rule line. Diagnose apply is simulated in demo sessions and never applied by a live desktop session, matching the TUI.
-- Right-click opens no action menu yet; the inspector's actions list serves instead. Column drag-reorder and per-column width persistence are not implemented.
+- Right-click opens a row's actions, the same list the inspector shows. Column drag-reorder and per-column width persistence are not implemented.
 - App-drawn window chrome is opt-in (`--app-chrome`) until edge resizing is verified across compositors.
 
 Dense view is implemented against mock 2o. See [DENSE.md](DENSE.md) for controls, data semantics and verification. In dense, `p` pauses (`f` remains an alias); space folds.

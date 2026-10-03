@@ -2,9 +2,23 @@
 name = "netwatch-desktop"
 version = "0.1.1"
 edition = "2021"
+# netwatch-tui 0.35.1 declares no rust-version, but it calls
+# AtomicUsize::try_update (stable in 1.95) on every platform and
+# File::try_lock (1.89) on unix. clippy's incompatible_msrv lint checks only
+# this crate's own code against this, not its dependencies; CI's msrv job
+# builds everything with 1.95.
+rust-version = "1.95"
 authors = ["Matt Hartley <matthew.t.hartley@gmail.com>"]
-description = "Native desktop companion for netwatch — Workbench shell over the same collectors as the TUI."
+description = "See which programs on this computer use the network and what's wrong with it. A desktop app built on netwatch."
 license = "MIT"
+repository = "https://github.com/matthart1983/netwatch-desktop"
+homepage = "https://github.com/matthart1983/netwatch-desktop"
+readme = "README.md"
+keywords = ["network-monitor", "netwatch", "egui", "packet-capture", "diagnostics"]
+categories = ["network-programming", "gui", "visualization"]
+# The screenshots are for the repository's README, about 2 MB; crates.io
+# shows README images from the repository.
+exclude = ["docs/screenshots/", ".github/"]
 
 [[bin]]
 name = "netwatch-desktop"
@@ -33,3 +47,11 @@ toml_edit = "0.22"
 tempfile = "3"
 dirs = "5"
 chrono = "0.4"
+
+[dev-dependencies]
+# The screenshot fixture moves netwatch's demo incident into documentation
+# address ranges by rewriting it as JSON. Already in the lockfile via netwatch.
+serde_json = "1"
+# The README screenshots carry a stamp in a PNG text chunk, which image's
+# encoder can't write. Already in the lockfile as image's PNG codec.
+png = "0.18"

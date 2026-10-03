@@ -721,8 +721,8 @@ impl Dense {
                         ui.colored_label(theme::rx(), format!("↓ {}", format::opt_rate(c.rx_rate)));
                         ui.colored_label(theme::tx(), format!("↑ {}", format::opt_rate(c.tx_rate)));
                         ui.label(RichText::new(&c.state).color(theme::text2()));
-                        if let Some(app) = &c.app_protocol {
-                            ui.label(RichText::new(format!("app {app:?}")).color(theme::text2()));
+                        if let Some(app) = crate::screens::connections::model::app_summary(c) {
+                            ui.label(RichText::new(app).color(theme::text2()));
                         }
                     });
                     ui.horizontal_wrapped(|ui| {

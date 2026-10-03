@@ -976,7 +976,7 @@ mod tests {
     #[test]
     fn a_toast_takes_the_sentence_and_leaves_the_severity_word() {
         let mut s = Snapshot::empty();
-        s.interface = "wlp192s0".into();
+        s.interface = "wlp0s20f3".into();
         s.issues = vec![crate::screens::connections::tests::issue(
             "dns.slow_resolver",
             netwatch::diagnose::issue::Subject::Resolver {
@@ -1006,7 +1006,7 @@ mod tests {
                     "{size:?}: the toast replaces the sentence"
                 );
                 let word = at(&strip.word).expect("the severity word stays");
-                let iface = at("lite · wlp192s0").unwrap();
+                let iface = at("lite · wlp0s20f3").unwrap();
                 assert!(
                     word.left() > iface.right(),
                     "{size:?}: the word {word:?} stays clear of {iface:?}"

@@ -166,6 +166,10 @@ pub struct Snapshot {
 
     // Workbench screens.
     pub demo: bool,
+    /// `--graph-preview`'s made-up snapshot. Nothing in it was read from
+    /// this machine, and screens don't read the machine for it either:
+    /// no `/proc` for its PIDs and no real paths.
+    pub synthetic: bool,
     pub session_started: Instant,
     pub hostname: String,
     pub gateway: Option<String>,
@@ -237,6 +241,7 @@ impl Snapshot {
             coverage: String::new(),
             issues: vec![],
             demo: false,
+            synthetic: false,
             session_started: Instant::now(),
             hostname: String::new(),
             gateway: None,
@@ -482,6 +487,7 @@ impl Snapshot {
             coverage: app.diagnose.engine.coverage().label(),
             issues: app.diagnose.engine.primary().into_iter().cloned().collect(),
             demo: app.diagnose.is_demo(),
+            synthetic: false,
             session_started: app.session_started_at,
             hostname: app.config_collector.config.hostname.clone(),
             gateway: app.config_collector.config.gateway.clone(),

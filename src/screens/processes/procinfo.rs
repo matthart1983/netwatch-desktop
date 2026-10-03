@@ -210,14 +210,14 @@ mod tests {
             std::fs::write(dir.join("fd").join(fd), b"").unwrap();
         }
         let users =
-            parse_passwd("root:x:0:0::/root:/bin/sh\nmatt:x:1000:1000::/home/matt:/bin/zsh\n");
+            parse_passwd("root:x:0:0::/root:/bin/sh\nalice:x:1000:1000::/home/alice:/bin/zsh\n");
         let info = read_in(&root, 473, &users);
         assert_eq!(info.cmdline.as_deref(), Ok("ncat -l 9000 --keep-open"));
         assert_eq!(
             info.cgroup.as_deref(),
             Ok("user.slice/user-1000.slice/session-2.scope")
         );
-        assert_eq!(info.user.as_deref(), Ok("matt (1000)"));
+        assert_eq!(info.user.as_deref(), Ok("alice (1000)"));
         assert_eq!(info.threads.as_deref(), Ok("1"));
         assert_eq!(info.fds.as_deref(), Ok("3"));
         let _ = std::fs::remove_dir_all(&root);

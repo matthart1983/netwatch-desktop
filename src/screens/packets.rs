@@ -614,10 +614,10 @@ impl Packets {
 
     /// First run's grant for this platform and binary, so the app only ever
     /// offers one command.
-    fn grant_command() -> String {
+    fn grant_command(s: &Snapshot) -> String {
         crate::sheets::first_run::grant_command(
             std::env::consts::OS,
-            &crate::sheets::first_run::exe_path(),
+            &crate::sheets::first_run::exe_path(s),
         )
     }
 }
@@ -896,7 +896,7 @@ impl Screen for Packets {
             Key::Char('a') | Key::Right => self.direction = self.direction.next(),
             Key::Left => self.direction = self.direction.prev(),
             Key::Char('y') if unavailable => {
-                self.pending_copy = Some(Self::grant_command());
+                self.pending_copy = Some(Self::grant_command(cx.s));
                 *cx.toast = Some(Toast::ok("copied grant command"));
             }
             Key::Char('y') => self.copy_packet(cx),

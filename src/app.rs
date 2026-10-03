@@ -2560,6 +2560,8 @@ fn fit_breadcrumb(ui: &Ui, mut parts: Vec<String>, budget: f32) -> Vec<String> {
 mod render_checks;
 #[cfg(test)]
 mod render_matrix;
+#[cfg(test)]
+mod screenshots;
 
 #[cfg(test)]
 mod tests {
@@ -2816,7 +2818,7 @@ mod tests {
                 assert_eq!(fitted[1], "…");
                 assert_eq!(fitted.last().unwrap(), "10.0.0.1");
                 let path =
-                    "✓ exported /home/matt/.local/share/netwatch/exports/connections-20260915.json";
+                    "✓ exported /home/alice/.cache/netwatch/exports/connections-20260915.json";
                 let short = middle_ellipsis(ui, path, FontId::monospace(theme::LABEL), 220.0);
                 assert!(short.contains('…') && short.ends_with(".json"), "{short}");
             });

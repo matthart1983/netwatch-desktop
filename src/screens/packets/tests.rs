@@ -161,7 +161,7 @@ fn renders_empty_snapshot_with_permissions_card() {
         copied,
         crate::sheets::first_run::grant_command(
             std::env::consts::OS,
-            &crate::sheets::first_run::exe_path()
+            &crate::sheets::first_run::exe_path(&s)
         )
     );
     assert!(copied.contains("setcap cap_net_raw=ep") || cfg!(not(target_os = "linux")));

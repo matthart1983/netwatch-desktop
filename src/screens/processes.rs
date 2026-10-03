@@ -902,6 +902,17 @@ impl Processes {
         );
     }
 
+    /// The process's cmdline, cgroup, user, threads and fds. A preview's
+    /// PIDs are made up, and a real process can hold the same number, so
+    /// nothing is read for them.
+    fn identity(&mut self, s: &Snapshot, pid: Option<u32>) -> procinfo::Info {
+        match pid {
+            Some(_) if s.synthetic => procinfo::unavailable("not read in graph preview"),
+            Some(pid) => self.info.get(pid).clone(),
+            None => procinfo::unavailable("no owning process"),
+        }
+    }
+
     fn inspector_body(&mut self, ui: &mut Ui, cx: &mut Cx) {
         let (rows, _, _) = self.visible(cx);
         let Some(row) = self.selected_index(&rows).map(|i| rows[i].clone()) else {
@@ -926,10 +937,7 @@ impl Processes {
         ui_kit::rule(ui);
 
         let sockets = Self::sockets(s, &row.name, row.pid);
-        let info = match row.pid {
-            Some(pid) => self.info.get(pid).clone(),
-            None => procinfo::unavailable("no owning process"),
-        };
+        let info = self.identity(s, row.pid);
         let (cmdline, cmdline_c) = field(&info.cmdline);
         let (cgroup, cgroup_c) = field(&info.cgroup);
         let (user, user_c) = field(&info.user);

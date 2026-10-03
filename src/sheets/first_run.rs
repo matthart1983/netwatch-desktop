@@ -193,8 +193,15 @@ pub fn checklist(platform: &str, caps: &CapabilitySnapshot, s: &Snapshot) -> Vec
         .collect()
 }
 
-/// The executable this desktop is running from, quoted for a shell.
-pub fn exe_path() -> String {
+/// Stands in for the binary's path where it isn't shown.
+pub const EXE_PLACEHOLDER: &str = "<path to netwatch-desktop>";
+
+/// The executable this desktop is running from, quoted for a shell. A
+/// preview names no path of this machine, which can include the user's home.
+pub fn exe_path(s: &Snapshot) -> String {
+    if s.synthetic {
+        return EXE_PLACEHOLDER.into();
+    }
     std::env::current_exe()
         // Linux reports a replaced binary as `… (deleted)`; the grant must
         // name the file now on disk.
@@ -204,7 +211,7 @@ pub fn exe_path() -> String {
                 .trim_end_matches(" (deleted)")
                 .to_string()
         })
-        .unwrap_or_else(|_| "<path to netwatch-desktop>".into())
+        .unwrap_or_else(|_| EXE_PLACEHOLDER.into())
 }
 
 /// The exact grant for a platform, and the only one the app shows: first run
@@ -499,7 +506,7 @@ impl FirstRun {
     }
 
     /// The exact grant for the running executable, beneath the checklist.
-    fn grant(&mut self, ui: &mut Ui) -> Option<Key> {
+    fn grant(&mut self, ui: &mut Ui, s: &Snapshot) -> Option<Key> {
         let mut clicked = None;
         let platform = PLATFORMS[self.platform];
         ui.add_space(14.0);
@@ -509,7 +516,7 @@ impl FirstRun {
             theme::muted(),
         ));
         ui.add_space(2.0);
-        let command = grant_command(platform, &exe_path());
+        let command = grant_command(platform, &exe_path(s));
         egui::Frame::none()
             .stroke(Stroke::new(1.0_f32, theme::border()))
             .fill(theme::window_bg())
@@ -652,7 +659,7 @@ impl FirstRun {
                     if let Some(k) = self.left(ui, cx) {
                         clicked = Some(k);
                     }
-                    if let Some(k) = self.grant(ui) {
+                    if let Some(k) = self.grant(ui, cx.s) {
                         clicked = Some(k);
                     }
                     if short {
@@ -977,7 +984,7 @@ impl Sheet for FirstRun {
                 SheetKey::Consumed
             }
             Key::Char('y') => {
-                let command = grant_command(PLATFORMS[self.platform], &exe_path());
+                let command = grant_command(PLATFORMS[self.platform], &exe_path(cx.s));
                 *cx.toast = Some(Toast::ok(format!("✓ copied · {command}")));
                 self.copy = Some(command);
                 SheetKey::Consumed
@@ -1189,6 +1196,24 @@ mod tests {
             })
             .collect();
         (texts, toast)
+    }
+
+    /// A preview's grant names no path of this machine, which can hold the
+    /// user's home: the sheet and the copied command use a placeholder.
+    #[test]
+    fn a_preview_grant_names_no_path_of_this_machine() {
+        let real = exe_path(&Snapshot::empty());
+        assert_ne!(real, EXE_PLACEHOLDER);
+        let s = crate::preview::snapshot(std::time::Instant::now(), 0);
+        let (texts, toast) = render(&mut FirstRun::default(), &s);
+        let copied = toast.unwrap().text;
+        assert!(copied.contains(EXE_PLACEHOLDER), "{copied}");
+        assert!(!copied.contains(&real), "{copied}");
+        assert!(
+            texts.iter().any(|t| t.contains(EXE_PLACEHOLDER)),
+            "{texts:?}"
+        );
+        assert!(!texts.iter().any(|t| t.contains(&real)), "{texts:?}");
     }
 
     #[test]

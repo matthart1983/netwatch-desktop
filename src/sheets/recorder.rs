@@ -1015,6 +1015,13 @@ impl Sheet for Recorder {
                 self.trim.1 = (self.trim.1 + TRIM_STEP)
                     % (RING_SECS - self.trim.0 - TRIM_STEP).max(TRIM_STEP);
             }
+            // The preview's directory isn't a real one, and opening it
+            // would create it.
+            Key::Char('o') if s.synthetic => {
+                let toast = Toast::err("✕ nothing to open · the graph preview exports nothing");
+                self.open_result = Some((toast.ok, toast.text.clone()));
+                *cx.toast = Some(toast);
+            }
             Key::Char('o') => {
                 let dir = s
                     .action
@@ -1174,6 +1181,29 @@ mod tests {
             sheet.key(*k, &mut cx);
         }
         (texts, commands, toast)
+    }
+
+    /// A preview shows where exports would go without naming the real
+    /// cache directory, and `o` opens nothing.
+    #[test]
+    fn a_preview_shows_no_real_export_directory_and_opens_nothing() {
+        let s = crate::preview::snapshot(std::time::Instant::now(), 0);
+        let mut sheet = Recorder::default();
+        let (texts, commands, toast) = run(&mut sheet, &s, &[Key::Char('o')]);
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.starts_with("~/.cache/netwatch/exports/netwatch_incident_")),
+            "{texts:?}"
+        );
+        assert!(commands.is_empty());
+        let toast = toast.unwrap();
+        assert!(
+            !toast.ok && toast.text.contains("graph preview"),
+            "{}",
+            toast.text
+        );
+        assert!(!std::path::Path::new("~").exists());
     }
 
     #[test]
