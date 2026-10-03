@@ -3,11 +3,15 @@
 //!
 //! On Wayland the shell finds the app's name and icon through the app id:
 //! it looks for `<app id>.desktop`. On X11 it matches the `.desktop` file's
-//! `StartupWMClass` against WM_CLASS, which winit takes from the binary's
-//! name. Both are `netwatch-desktop`, so one `.desktop` file serves both.
-//! X11 and Windows also take the window icon set here.
+//! `StartupWMClass` against the window's WM_CLASS. Whenever egui-winit's
+//! wayland feature is on, as it is in eframe's defaults, egui-winit gives
+//! winit the app id as the X11 class too, with an empty instance. So the
+//! class is `netwatch-desktop` whatever the binary is called, and one
+//! `.desktop` file serves both. X11 and Windows also take the window icon
+//! set here.
 
-/// The Wayland app id, the `.desktop` file's name and the icon's name.
+/// The Wayland app id, the X11 class, the `.desktop` file's name and the
+/// icon's name.
 pub const APP_ID: &str = "netwatch-desktop";
 
 const ICON_PNG: &[u8] = include_bytes!("../assets/icon/netwatch-desktop-256.png");
@@ -104,8 +108,11 @@ mod tests {
         assert_eq!(icon.rgba[(128 * 256 + 128) * 4 + 3], 255);
     }
 
-    /// X11 matches StartupWMClass against WM_CLASS, which winit sets from
-    /// the binary's file name, so the binary has to be called APP_ID too.
+    /// The `.desktop` file runs the installed binary and names the icon and
+    /// the X11 class the window carries, both APP_ID. The binary has the
+    /// same name, so the match would hold even if WM_CLASS fell back to
+    /// winit's own default, the binary's file name, which it does only
+    /// without egui-winit's wayland feature.
     #[test]
     fn the_desktop_file_matches_the_app_id_and_binary() {
         assert_eq!(APP_ID, env!("CARGO_PKG_NAME"));
