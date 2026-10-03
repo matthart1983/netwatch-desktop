@@ -65,13 +65,15 @@ fn populated() -> TestScreen {
     }
 }
 
-fn render(screen: &mut Egress, s: &Snapshot) {
+/// Draws navigator, inspector and tab; returns the last frame's text.
+fn render(screen: &mut Egress, s: &Snapshot) -> Vec<String> {
     let ctx = egui::Context::default();
     crate::theme::install_fonts(&ctx);
     crate::theme::apply(&ctx);
     let mut h = Harness::new();
+    let mut texts = Vec::new();
     for _ in 0..2 {
-        let _ = ctx.run(
+        let output = ctx.run(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -95,7 +97,49 @@ fn render(screen: &mut Egress, s: &Snapshot) {
                 });
             },
         );
+        texts = output
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                _ => None,
+            })
+            .collect();
     }
+    texts
+}
+
+/// `populated` plus a global block list, alert = "all", a per-process block
+/// on curl, and one curl destination the block list matched.
+fn with_block() -> TestScreen {
+    use netwatch::collectors::egress::{AlertMode, BlockList};
+    let mut screen = populated();
+    let mut data = (**screen.data.as_ref().unwrap()).clone();
+    let policy = data.policy.as_mut().unwrap();
+    policy.alert = AlertMode::All;
+    policy.block = BlockList {
+        sni: vec!["*.evil.example".into()],
+        ports: vec![25],
+        ..Default::default()
+    };
+    policy.process.get_mut("curl").unwrap().block.ip = vec!["198.51.100.0/24".into()];
+    let mut evil = data.profiles[0].dests[&("api.github.com".to_string(), 443)].clone();
+    evil.sni = Some("evil.example".into());
+    evil.last_ip = "203.0.113.66".into();
+    let curl = data
+        .profiles
+        .iter_mut()
+        .find(|p| p.process == "curl")
+        .unwrap();
+    curl.dests.insert(("evil.example".into(), 443), evil);
+    data.verdicts.insert(
+        ("curl".into(), "evil.example".into(), 443),
+        Verdict::Blocked("evil.example is blocked (*.evil.example)".into()),
+    );
+    let path = data.policy_path.clone().unwrap();
+    std::fs::write(&path, toml::to_string(&data.policy).unwrap()).unwrap();
+    screen.data = Some(Arc::new(data));
+    screen
 }
 
 #[test]
@@ -135,6 +179,85 @@ fn strip_reports_drift_and_keep_warning_quiets_it() {
     // Quiet now: the default issue strip (none on an empty snapshot).
     assert!(screen.status(&h.cx(&s, None)).is_none());
     assert!(!screen.key(Key::Char('d'), &mut h.cx(&s, None)));
+}
+
+#[test]
+fn blocked_destination_leads_the_strip_and_cannot_be_allowed() {
+    let s = Snapshot::empty();
+    let mut screen = with_block();
+    let mut h = Harness::new();
+    let strip = screen.status(&h.cx(&s, None)).unwrap();
+    assert_eq!(strip.word, "1 blocked");
+    assert_eq!(strip.color, theme::error());
+    assert!(
+        strip
+            .sentence
+            .starts_with("curl → evil.example:443 blocked since"),
+        "{}",
+        strip.sentence
+    );
+    assert!(strip
+        .sentence
+        .contains("node → 203.0.113.9:443 not in policy"));
+    let keys: Vec<&str> = strip.keys.iter().map(|k| k.label.as_str()).collect();
+    assert_eq!(keys, ["allow newest", "keep warning"]);
+
+    // `a` from the strip skips the block (no allow line overrides it) and
+    // reviews the newest drift instead.
+    assert!(screen.key(Key::Char('a'), &mut h.cx(&s, None)));
+    assert!(screen.pending.as_ref().unwrap().title.contains("for node"));
+    screen.key(Key::Esc, &mut h.cx(&s, None));
+
+    // Selected, the blocked row offers no allow, only keep warning.
+    screen.selected = Some(Sel::Dest("curl".into(), "evil.example".into(), 443));
+    assert!(!screen.key(Key::Char('a'), &mut h.cx(&s, None)));
+    assert!(screen.pending.is_none());
+    let texts = render(&mut screen, &s);
+    for want in [
+        "evil.example is blocked (*.evil.example)",
+        "alerts for blocked, drift and undeclared",
+        "blocks sni *.evil.example · port 25",
+    ] {
+        assert!(texts.iter().any(|t| t == want), "{want} in {texts:?}");
+    }
+    assert!(
+        !texts.iter().any(|t| t.starts_with("allow — add")),
+        "{texts:?}"
+    );
+    assert!(screen.key(Key::Char('d'), &mut h.cx(&s, None)));
+    assert!(h.toast.as_ref().unwrap().text.contains("evil.example"));
+    assert!(h.commands.is_empty());
+
+    // The process inspector names curl's own block entries and the count.
+    screen.selected = Some(Sel::Process("curl".into()));
+    let texts = render(&mut screen, &s);
+    assert!(texts.iter().any(|t| t == "ip 198.51.100.0/24"), "{texts:?}");
+    assert!(
+        texts.iter().any(|t| t == "ruled · 3 · 1 blocked"),
+        "{texts:?}"
+    );
+}
+
+#[test]
+fn tab_badge_and_navigator_show_the_block_list_state() {
+    let mut s = Snapshot::empty();
+    let blocked = with_block();
+    s.egress = blocked.data.clone().unwrap();
+    assert_eq!(
+        crate::screens::badge(Tab::Egress, &s),
+        Some(("1 blocked".to_string(), theme::error()))
+    );
+    // Default alert mode and no block list.
+    let mut plain = populated();
+    s.egress = plain.data.clone().unwrap();
+    assert_eq!(
+        crate::screens::badge(Tab::Egress, &s),
+        Some(("1 drift".to_string(), theme::violet()))
+    );
+    let texts = render(&mut plain, &Snapshot::empty());
+    for want in ["alerts for blocked destinations only", "no block list"] {
+        assert!(texts.iter().any(|t| t == want), "{want} in {texts:?}");
+    }
 }
 
 #[test]

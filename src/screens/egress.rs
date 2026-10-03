@@ -12,7 +12,7 @@ use crate::ui_kit::{self, Cell, Column, PanelHead, StripGroup, Table};
 use crate::{format, theme};
 use egui::{pos2, vec2, Align, Color32, FontId, Rect, Sense, Ui};
 use model::{DestRow, DiffKind, Line, MatchKind, ProcRow, Scope, Show};
-use netwatch::collectors::egress::Verdict;
+use netwatch::collectors::egress::{AlertMode, Verdict};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -247,8 +247,9 @@ impl Egress {
             .is_some_and(|at| at.elapsed() < Self::cooldown(e))
     }
 
-    /// Unacknowledged drifts under the tab filter, most recent first.
-    pub fn drifts(&self, cx: &Cx) -> Vec<(String, DestRow)> {
+    /// Unacknowledged findings under the tab filter: blocked destinations
+    /// first, then drift, each most recent first.
+    pub fn findings(&self, cx: &Cx) -> Vec<(String, DestRow)> {
         let e = self.egress(cx.s);
         let rows = model::build(
             e,
@@ -263,28 +264,40 @@ impl Egress {
                 let process = r.process;
                 r.dests.into_iter().map(move |d| (process.clone(), d))
             })
-            .filter(|(p, d)| model::is_drift(&d.verdict) && !self.is_acknowledged(e, &d.key(p)))
+            .filter(|(p, d)| model::is_finding(&d.verdict) && !self.is_acknowledged(e, &d.key(p)))
             .collect();
-        out.sort_by_key(|a| std::cmp::Reverse(a.1.dest.first_seen));
+        out.sort_by_key(|a| {
+            (
+                !model::is_blocked(&a.1.verdict),
+                std::cmp::Reverse(a.1.dest.first_seen),
+            )
+        });
         out
     }
 
     /// What `a` and `d` act on. With a destination row selected, only that
     /// row, and only when the inspector offers the action for it: `a` for a
-    /// destination the policy doesn't admit, `d` for a drift. Otherwise the
-    /// newest drift, which the status strip names.
+    /// destination an allow line would admit, `d` for a finding. Otherwise
+    /// the first finding the status strip names that the key applies to.
     fn decision_target(&self, cx: &Cx, key: char) -> Option<(String, DestRow)> {
+        let applies = |d: &DestRow| match key {
+            'a' => Self::allowable(&d.verdict),
+            _ => model::is_finding(&d.verdict),
+        };
         if matches!(self.selected, Some(Sel::Dest(..))) {
-            return self.selected_dest(cx).filter(|(_, d)| match key {
-                'a' => !Self::admitted(&d.verdict),
-                _ => model::is_drift(&d.verdict),
-            });
+            return self.selected_dest(cx).filter(|(_, d)| applies(d));
         }
-        self.drifts(cx).into_iter().next()
+        self.findings(cx).into_iter().find(|(_, d)| applies(d))
     }
 
     fn admitted(verdict: &Verdict) -> bool {
         matches!(verdict, Verdict::Sni | Verdict::Ip | Verdict::Asn(_))
+    }
+
+    /// Not admitted, and not blocked: a block entry wins over any allow
+    /// line, so offering one for a blocked destination would change nothing.
+    fn allowable(verdict: &Verdict) -> bool {
+        !Self::admitted(verdict) && !model::is_blocked(verdict)
     }
 
     fn allow(&mut self, cx: &mut Cx, target: Option<(String, DestRow)>) -> bool {
@@ -696,12 +709,12 @@ impl Screen for Egress {
         if self.pending.is_some() {
             return None;
         }
-        let drifts = self.drifts(cx);
-        if drifts.is_empty() {
+        let findings = self.findings(cx);
+        if findings.is_empty() {
             return issue_strip(cx.s);
         }
         let e = self.egress(cx.s);
-        let clauses: Vec<String> = drifts
+        let clauses: Vec<String> = findings
             .iter()
             .take(2)
             .map(|(process, d)| {
@@ -714,6 +727,7 @@ impl Screen for Egress {
                     .min()
                     .unwrap_or(d.dest.first_seen);
                 let what = match d.verdict {
+                    Verdict::Blocked(_) => "blocked",
                     Verdict::Undeclared => "undeclared under strict",
                     _ => "not in policy",
                 };
@@ -721,24 +735,36 @@ impl Screen for Egress {
             })
             .collect();
         let mut sentence = clauses.join(" · ");
-        if drifts.len() > 2 {
-            sentence.push_str(&format!(" · {} more", drifts.len() - 2));
+        if findings.len() > 2 {
+            sentence.push_str(&format!(" · {} more", findings.len() - 2));
+        }
+        let blocked = findings
+            .iter()
+            .filter(|(_, d)| model::is_blocked(&d.verdict))
+            .count();
+        let drift = findings.len() - blocked;
+        let (color, word) = if blocked > 0 {
+            (theme::error(), format!("{blocked} blocked"))
+        } else {
+            (
+                theme::violet(),
+                format!("{drift} drift{}", if drift == 1 { "" } else { "s" }),
+            )
+        };
+        // With a destination selected, a and d act on that row (see the
+        // inspector), so the strip doesn't offer them for the newest finding.
+        let mut keys = Vec::new();
+        if !matches!(self.selected, Some(Sel::Dest(..))) {
+            if drift > 0 {
+                keys.push(Hint::ch('a', "allow newest"));
+            }
+            keys.push(Hint::ch('d', "keep warning"));
         }
         Some(Strip {
-            color: theme::violet(),
-            word: format!(
-                "{} drift{}",
-                drifts.len(),
-                if drifts.len() == 1 { "" } else { "s" }
-            ),
+            color,
+            word,
             sentence,
-            // With a destination selected, a and d act on that row (see the
-            // inspector), so the strip doesn't offer them for the newest drift.
-            keys: if matches!(self.selected, Some(Sel::Dest(..))) {
-                Vec::new()
-            } else {
-                vec![Hint::ch('a', "allow newest"), Hint::ch('d', "keep warning")]
-            },
+            keys,
         })
     }
 
@@ -934,21 +960,36 @@ impl Screen for Egress {
                             theme::text(),
                         ),
                         ("baseline", baseline, theme::text()),
-                        (
-                            "would match",
-                            if would.is_empty() {
-                                "–".into()
-                            } else {
-                                would
-                            },
-                            theme::good(),
-                        ),
+                        match &dest.verdict {
+                            // Checked before the allowlist: no allow line
+                            // admits a blocked destination.
+                            Verdict::Blocked(reason) => ("blocked", reason.clone(), theme::error()),
+                            _ => (
+                                "would match",
+                                if would.is_empty() {
+                                    "–".into()
+                                } else {
+                                    would
+                                },
+                                theme::good(),
+                            ),
+                        },
                     ],
                     1,
                 );
                 ui_kit::rule(ui);
                 ui_kit::section(ui, "decide");
-                if !Self::admitted(&dest.verdict) {
+                if model::is_blocked(&dest.verdict) {
+                    ui.add(
+                        egui::Label::new(ui_kit::mono(
+                            "blocked by the policy's block list · an allow line cannot override it · edit the policy file to unblock",
+                            theme::LABEL,
+                            theme::muted(),
+                        ))
+                        .wrap(),
+                    );
+                }
+                if Self::allowable(&dest.verdict) {
                     if let Some(allow) = model::allow_for(rule, d) {
                         let port = allow
                             .port
@@ -966,7 +1007,7 @@ impl Screen for Egress {
                         }
                     }
                 }
-                if model::is_drift(&dest.verdict) {
+                if model::is_finding(&dest.verdict) {
                     let key = dest.key(&process);
                     let cooldown = Self::cooldown(&e);
                     let label = match self.acknowledged.get(&key) {
@@ -994,47 +1035,52 @@ impl Screen for Egress {
                 );
                 ui_kit::rule(ui);
                 let rule = e.policy.as_ref().and_then(|p| p.process.get(&process));
-                ui_kit::kv_grid(
-                    ui,
-                    "egress_process_kv",
-                    &[
-                        ("destinations", row.dests.len().to_string(), theme::text()),
-                        (
-                            "drift",
-                            row.drift().to_string(),
-                            if row.drift() > 0 {
-                                theme::violet()
-                            } else {
-                                theme::text()
-                            },
-                        ),
-                        (
-                            "rule",
-                            match rule {
-                                Some(r) => format!(
-                                    "{} sni · {} asn · {} ip · {} ports",
-                                    r.allow_sni.len(),
-                                    r.allow_asn.len(),
-                                    r.allow_ip.len(),
-                                    r.allow_ports.len()
-                                ),
-                                None if e.policy.is_some() => "no rule".into(),
-                                None => "no policy loaded".into(),
-                            },
-                            theme::text(),
-                        ),
-                        (
-                            "first · last",
-                            format!(
-                                "{} · {}",
-                                row.first.map(short_age).unwrap_or("–".into()),
-                                row.last.map(short_age).unwrap_or("–".into())
+                let mut kv = vec![
+                    ("destinations", row.dests.len().to_string(), theme::text()),
+                    (
+                        "drift",
+                        row.drift().to_string(),
+                        if row.drift() > 0 {
+                            theme::violet()
+                        } else {
+                            theme::text()
+                        },
+                    ),
+                    (
+                        "rule",
+                        match rule {
+                            Some(r) => format!(
+                                "{} sni · {} asn · {} ip · {} ports",
+                                r.allow_sni.len(),
+                                r.allow_asn.len(),
+                                r.allow_ip.len(),
+                                r.allow_ports.len()
                             ),
-                            theme::text(),
+                            None if e.policy.is_some() => "no rule".into(),
+                            None => "no policy loaded".into(),
+                        },
+                        theme::text(),
+                    ),
+                    (
+                        "first · last",
+                        format!(
+                            "{} · {}",
+                            row.first.map(short_age).unwrap_or("–".into()),
+                            row.last.map(short_age).unwrap_or("–".into())
                         ),
-                    ],
-                    1,
-                );
+                        theme::text(),
+                    ),
+                ];
+                let blocks = rule
+                    .map(|r| model::block_entries(&r.block))
+                    .unwrap_or_default();
+                if !blocks.is_empty() {
+                    kv.insert(3, ("rule blocks", blocks.join(" · "), theme::text()));
+                }
+                if row.blocked() > 0 {
+                    kv.insert(1, ("blocked", row.blocked().to_string(), theme::error()));
+                }
+                ui_kit::kv_grid(ui, "egress_process_kv", &kv, 1);
                 ui_kit::rule(ui);
                 ui_kit::section(ui, "actions");
                 clicked = super::processes::action_rows(
@@ -1100,6 +1146,27 @@ impl Screen for Egress {
                 "no loaded policy · P reviews observed rules".into(),
                 theme::muted(),
             ),
+        }
+        if let Some(policy) = &e.policy {
+            wrap(
+                ui,
+                match policy.alert {
+                    AlertMode::Blocked => "alerts for blocked destinations only".into(),
+                    AlertMode::All => "alerts for blocked, drift and undeclared".into(),
+                },
+                theme::muted(),
+            );
+            let entries = model::block_entries(&policy.block);
+            if entries.is_empty() {
+                wrap(ui, "no block list".into(), theme::muted());
+            } else {
+                let shown = entries.len().min(6);
+                let mut text = format!("blocks {}", entries[..shown].join(" · "));
+                if entries.len() > shown {
+                    text.push_str(&format!(" · +{} more", entries.len() - shown));
+                }
+                wrap(ui, text, theme::text());
+            }
         }
         let persisted = netwatch::collectors::egress::default_profiles_path()
             .and_then(|p| std::fs::metadata(p).ok())

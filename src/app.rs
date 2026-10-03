@@ -1516,6 +1516,12 @@ impl DesktopApp {
                     {
                         nav.push(Nav::Tab(Tab::Egress));
                     }
+                    let blocked = s.map(screens::blocked_count).unwrap_or(0);
+                    if blocked > 0
+                        && ui_kit::chip(ui, &format!("{blocked} blocked"), theme::error()).clicked()
+                    {
+                        nav.push(Nav::Tab(Tab::Egress));
+                    }
                     let open = s.map(|s| s.issues.len()).unwrap_or(0);
                     if open > 0 && ui_kit::chip(ui, &format!("⚠ {open}"), theme::error()).clicked()
                     {
