@@ -2091,7 +2091,7 @@ impl DesktopApp {
                 theme::dense_style(ui);
                 ui.horizontal_centered(|ui| {
                     // Large text sizes in a small window: shorter buttons and
-                    // no Maximise (the window's own controls have it), so
+                    // no Maximise when the window's own controls have it, so
                     // every button stays on screen. The brand gives way.
                     let narrow = ui.available_width() < 640.0;
                     let brand = [
@@ -2105,7 +2105,7 @@ impl DesktopApp {
                     ];
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                         let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
-                        if !narrow
+                        if (!narrow || !self.system_decorations)
                             && ui
                                 .small_button(if maximized { "Restore" } else { "Maximise" })
                                 .clicked()
@@ -2140,6 +2140,7 @@ impl DesktopApp {
                         }
                         if ui
                             .small_button(if narrow { ":" } else { ": Commands" })
+                            .on_hover_text("Commands · :")
                             .clicked()
                         {
                             self.clicked.push(Key::Char(':'));
@@ -2190,22 +2191,33 @@ impl DesktopApp {
                                 );
                             });
                         }
+                        // With app chrome a narrow bar keeps Maximise, so the
+                        // capture state shortens too, rather than run off the
+                        // window's left edge.
                         if let Some(s) = s {
-                            ui.label(ui_kit::mono(
-                                if s.interface == "demo0" || s.demo {
-                                    "DEMO"
-                                } else if s.capture.starts_with("counters only") {
-                                    "COUNTERS ONLY"
-                                } else {
-                                    "CAPTURE LIVE"
-                                },
-                                size - 1.0,
-                                theme::muted(),
-                            ))
+                            ui.add(
+                                egui::Label::new(ui_kit::mono(
+                                    if s.interface == "demo0" || s.demo {
+                                        "DEMO"
+                                    } else if s.capture.starts_with("counters only") {
+                                        "COUNTERS ONLY"
+                                    } else {
+                                        "CAPTURE LIVE"
+                                    },
+                                    size - 1.0,
+                                    theme::muted(),
+                                ))
+                                .truncate(),
+                            )
                             .on_hover_text(&s.capture);
                         }
                         ui.with_layout(egui::Layout::left_to_right(Align::Center), |ui| {
                             for text in brand {
+                                // No room left: a bare "…" would sit on top of
+                                // the text to its right.
+                                if ui.available_width() < size {
+                                    break;
+                                }
                                 ui.add(egui::Label::new(text).truncate());
                             }
                         });
@@ -3331,24 +3343,39 @@ mod tests {
         let s = crate::backend::tests::snapshot();
         let draw =
             |app: &mut DesktopApp, ctx: &egui::Context| app.draw_dense(ctx, Some(&s), Some(&s));
-        // Dense's smallest window, 1100×680 px.
-        for (zoom, buttons) in [
+        let narrow = [":", "Pause · p", "☰ menu", "Full · V", "CAPTURE LIVE"];
+        let narrow_chrome = [
+            ":",
+            "Pause · p",
+            "☰ menu",
+            "Full · V",
+            "Maximise",
+            "CAPTURE LIVE",
+        ];
+        // Dense's smallest window, 1100×680 px. With --app-chrome there are
+        // no system controls, so narrow bars keep Maximise.
+        for (zoom, chrome, buttons) in [
             (
                 1.15,
+                false,
                 [
                     ": Commands",
                     "Pause · p",
                     "☰ menu",
                     "Full view · V",
                     "Maximise",
+                    "CAPTURE LIVE",
                 ]
                 .as_slice(),
             ),
-            (2.0, [":", "Pause · p", "☰ menu", "Full · V"].as_slice()),
-            (3.0, [":", "Pause · p", "☰ menu", "Full · V"].as_slice()),
+            (2.0, false, narrow.as_slice()),
+            (3.0, false, narrow.as_slice()),
+            (2.0, true, narrow_chrome.as_slice()),
+            (3.0, true, narrow_chrome.as_slice()),
         ] {
             let mut app = app_with(Prefs::default());
             app.view = View::Dense;
+            app.system_decorations = !chrome;
             let mut w = Window::new(vec2(1100.0, 680.0));
             w.frame(&mut app, |app, ctx| app.start(ctx));
             w.frame(&mut app, |app, ctx| {
@@ -3360,11 +3387,63 @@ mod tests {
             for button in buttons {
                 assert!(
                     on_screen(&out, screen, button),
-                    "{zoom}: {button} in {:?}",
+                    "{zoom} {chrome}: {button} in {:?}",
                     texts_at(&out)
                 );
             }
+            // What gives way stops short of its neighbour, not on top of it.
+            let mut bar: Vec<(String, Rect)> = out
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Text(t) => {
+                        let rect = t.galley.rect.translate(t.pos.to_vec2());
+                        (rect.center().y < theme::DATA + 16.0)
+                            .then(|| (t.galley.text().to_string(), rect))
+                    }
+                    _ => None,
+                })
+                .collect();
+            bar.sort_by(|a, b| a.1.left().total_cmp(&b.1.left()));
+            for pair in bar.windows(2) {
+                assert!(
+                    pair[0].1.right() <= pair[1].1.left() + 0.5,
+                    "{zoom} {chrome}: {:?} overlaps {:?}",
+                    pair[0],
+                    pair[1]
+                );
+            }
         }
+    }
+    #[test]
+    fn dense_commands_button_names_itself_on_hover_when_short() {
+        let s = crate::backend::tests::snapshot();
+        let draw =
+            |app: &mut DesktopApp, ctx: &egui::Context| app.draw_dense(ctx, Some(&s), Some(&s));
+        let mut app = app_with(Prefs::default());
+        app.view = View::Dense;
+        let mut w = Window::new(vec2(1100.0, 680.0));
+        w.frame(&mut app, |app, ctx| app.start(ctx));
+        w.frame(&mut app, |app, ctx| {
+            app.change_zoom(ctx, zoom::Change::To(3.0))
+        });
+        w.frame(&mut app, draw);
+        let out = w.frame(&mut app, draw);
+        let (_, at) = texts_at(&out)
+            .into_iter()
+            .find(|(t, _)| t == ":")
+            .expect("the short commands button");
+        w.events.push(egui::Event::PointerMoved(at));
+        // Past egui's tooltip delay.
+        let mut out = w.frame(&mut app, draw);
+        for _ in 0..60 {
+            out = w.frame(&mut app, draw);
+        }
+        assert!(
+            texts_at(&out).iter().any(|(t, _)| t == "Commands · :"),
+            "{:?}",
+            texts_at(&out)
+        );
     }
     fn inner_sizes(out: &egui::FullOutput) -> Vec<egui::Vec2> {
         out.viewport_output[&egui::ViewportId::ROOT]
