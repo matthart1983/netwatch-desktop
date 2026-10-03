@@ -1,0 +1,23 @@
+#!/bin/sh
+# Grants packet capture to the installed binary.
+#
+# netwatch's own package prints the setcap command and leaves it to the
+# admin, because `sudo netwatch` works without it. A desktop app run as root
+# can't reach the user's Wayland or X11 session, so here the packets tab
+# would never work without the grant. It is cap_net_raw only, the grant the
+# first-run sheet shows (first_run::grant_command), and a test keeps the two
+# the same. Every upgrade or reinstall replaces the file, which drops the
+# capability, and runs this again, which puts it back. So
+# `sudo setcap -r /usr/bin/netwatch-desktop` takes it away only until then.
+set -e
+
+if [ "$1" = "configure" ]; then
+    # A filesystem without extended attributes can't hold a capability. The
+    # app still runs without one, and its first-run sheet shows the command.
+    if ! setcap cap_net_raw=ep /usr/bin/netwatch-desktop; then
+        echo "netwatch-desktop: setcap failed, so packet capture is off. To turn it on:" >&2
+        echo "  sudo setcap cap_net_raw=ep /usr/bin/netwatch-desktop" >&2
+    fi
+fi
+
+exit 0

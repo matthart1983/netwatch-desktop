@@ -1,3 +1,11 @@
+// Windows builds stay console programs, so starting one from Explorer opens
+// a console window beside the app. netwatch's collectors run netstat,
+// tasklist, ping, powershell and others every tick without CREATE_NO_WINDOW.
+// When a GUI program starts a console program, Windows opens a new console
+// window for it, so as a GUI program the app would flash windows every tick.
+// A console program's children share its console instead. A test keeps
+// `windows_subsystem` out until netwatch hides those windows.
+
 mod app;
 mod backend;
 mod capture;
@@ -7,6 +15,7 @@ mod dense;
 mod egress_policy;
 mod format;
 mod graphs;
+mod identity;
 mod lite;
 mod prefs;
 mod preview;
@@ -121,6 +130,25 @@ fn validate(args: &[String]) -> Result<(), String> {
         return Err("--no-sandbox and --sandbox-strict conflict".into());
     }
     Ok(())
+}
+
+/// The window `main` opens: the app id and icon the desktop knows the app
+/// by, then this launch's size and chrome.
+fn main_window(
+    size: [f32; 2],
+    minimum: egui::Vec2,
+    app_chrome: bool,
+    screenshot: bool,
+) -> egui::ViewportBuilder {
+    identity::apply(egui::ViewportBuilder::default())
+        .with_title("netwatch")
+        .with_decorations(!app_chrome)
+        .with_active(!screenshot)
+        .with_mouse_passthrough(screenshot)
+        // The window is made before the text size applies, so these are
+        // window points as they are.
+        .with_inner_size([size[0].max(minimum.x), size[1].max(minimum.y)])
+        .with_min_inner_size(minimum)
 }
 
 fn main() -> eframe::Result<()> {
@@ -241,15 +269,7 @@ fn main() -> eframe::Result<()> {
     let sheet = arg(&args, "--sheet");
     let theme_name = arg(&args, "--theme");
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("netwatch")
-            .with_decorations(!app_chrome)
-            .with_active(!screenshot)
-            .with_mouse_passthrough(screenshot)
-            // The window is made before the text size applies, so these
-            // are window points as they are.
-            .with_inner_size([size[0].max(minimum.x), size[1].max(minimum.y)])
-            .with_min_inner_size(minimum),
+        viewport: main_window(size, minimum, app_chrome, screenshot),
         ..Default::default()
     };
 
@@ -338,5 +358,40 @@ mod tests {
         assert!(validate(&args("--zoom 2")).is_ok());
         assert!(validate(&args("--zoom 1.5")).is_err());
         assert_eq!(super::dense_box("4"), Some(crate::dense::Panel::ALL[3]));
+    }
+    /// The window main opens is the one the desktop can match to the
+    /// .desktop file and give the icon to.
+    #[test]
+    fn the_main_window_carries_the_app_id_and_icon() {
+        let minimum = egui::vec2(900.0, 600.0);
+        let window = super::main_window([800.0, 700.0], minimum, false, false);
+        assert_eq!(window.app_id.as_deref(), Some(crate::identity::APP_ID));
+        assert!(window.icon.is_some(), "the window has no icon");
+        assert_eq!(window.title.as_deref(), Some("netwatch"));
+        assert_eq!(window.decorations, Some(true));
+        // Never smaller than the view's minimum.
+        assert_eq!(window.inner_size, Some(egui::vec2(900.0, 700.0)));
+        assert_eq!(window.min_inner_size, Some(minimum));
+
+        let screenshot = super::main_window([800.0, 700.0], minimum, true, true);
+        assert_eq!(screenshot.app_id.as_deref(), Some(crate::identity::APP_ID));
+        assert_eq!(screenshot.decorations, Some(false));
+        assert_eq!(screenshot.active, Some(false));
+        assert_eq!(screenshot.mouse_passthrough, Some(true));
+    }
+    /// Windows builds stay console programs until netwatch starts its
+    /// helper programs with CREATE_NO_WINDOW; the comment at the top of
+    /// this file says why.
+    #[test]
+    fn windows_builds_stay_console_programs() {
+        let attributes = include_str!("main.rs")
+            .lines()
+            .filter(|l| l.trim_start().starts_with("#!["));
+        for attribute in attributes {
+            assert!(
+                !attribute.contains("windows_subsystem"),
+                "{attribute} makes netwatch's helper programs flash console windows"
+            );
+        }
     }
 }

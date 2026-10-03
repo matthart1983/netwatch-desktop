@@ -1,0 +1,176 @@
+name: Release
+
+# Linux x86_64 only for now: a tarball, a .deb and an .rpm, all holding the
+# same binary. macOS and Windows stay build-from-source until their CI jobs
+# are green and the signing accounts exist.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to build and release again, such as v0.2.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # A tag push sets ref_name to the tag. A manual run sets it to the branch,
+  # so the tag comes from the input instead.
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    # The binary needs the newest glibc symbol versions of the glibc it was
+    # linked against, so building in the ubuntu:22.04 image keeps the floor
+    # at 2.35 whatever the runner is. `release.sh check` fails the job if a
+    # newer one gets in. The container also outlives the ubuntu-22.04 runner
+    # image ci.yml uses, which GitHub removes in April 2027.
+    container: ubuntu:22.04
+    timeout-minutes: 60
+    steps:
+      # git first, so checkout makes a real clone and `package` can date the
+      # files from the tagged commit. No libpcap-dev: release.sh builds
+      # libpcap from source and links it in.
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential ca-certificates curl git \
+            flex bison dpkg-dev pkg-config xz-utils libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      # The workspace belongs to the runner's user and this container runs
+      # as root, so git refuses the repo as dubious ownership. checkout
+      # marks it safe only for its own step.
+      - name: Let git read the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # The versions the packages were checked with. auto-req, caps and
+      # requires behave differently between cargo-generate-rpm versions, and
+      # it isn't in install-action's own list, so unpinned it would come
+      # from cargo-binstall at whatever is newest.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb@3.8.0,cargo-generate-rpm@0.21.0
+
+      - name: Tag is the version in Cargo.toml
+        run: packaging/linux/release.sh tag "$RELEASE_TAG"
+
+      - name: Build static libpcap
+        run: packaging/linux/release.sh libpcap
+
+      # The tag push starts CI too, and nothing here waits for it, so the
+      # tests run again on the commit being released.
+      - name: Test
+        run: packaging/linux/release.sh test
+
+      - name: Build
+        run: packaging/linux/release.sh build
+
+      - name: Check glibc floor, libpcap and build paths
+        run: packaging/linux/release.sh check
+
+      - name: Package
+        run: packaging/linux/release.sh package
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-x86_64
+          path: dist/
+          if-no-files-found: error
+
+  # Installs each package in a clean container of the distro it's for.
+  # NET_RAW has to be in the container's bounding set, or the kernel refuses
+  # to run a binary that carries cap_net_raw=ep.
+  verify:
+    needs: linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: linux-x86_64
+          path: dist
+
+      - name: Install the .deb on Debian 12
+        run: docker run --rm --cap-add NET_RAW -v "$PWD:/src" -w /src debian:bookworm packaging/linux/release.sh verify-deb
+
+      - name: Install the .rpm on Fedora
+        run: docker run --rm --cap-add NET_RAW -v "$PWD:/src" -w /src fedora:latest packaging/linux/release.sh verify-rpm
+
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # Build provenance. id-token signs the attestation and attestations
+      # stores it, so `gh attestation verify` works. GitHub only offers this
+      # on public repositories, or private ones on Enterprise Cloud.
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: linux-x86_64
+          path: dist
+
+      # `sha256sum --ignore-missing -c SHA256SUMS` checks whichever files
+      # were downloaded.
+      - name: Write SHA256SUMS
+        working-directory: dist
+        run: |
+          sha256sum -- *.tar.gz *.deb *.rpm | sort -k2 > SHA256SUMS
+          cat SHA256SUMS
+
+      # Skipped while the repo is private, where it would fail and stop the
+      # release below, so a test tag such as v0.2.0-rc.1 can run end to end
+      # before the repo goes public.
+      - uses: actions/attest-build-provenance@v4
+        if: ${{ !github.event.repository.private }}
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.rpm
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          # A tag with a hyphen, such as v0.2.0-rc.1, is a pre-release, so
+          # /releases/latest keeps pointing at the last real one.
+          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
+          generate_release_notes: true
+          body: |
+            Linux x86_64 with glibc 2.35 or newer: Ubuntu 22.04, Debian 12, Fedora 36 and later. macOS and Windows build from source; see the README.
+
+            Debian or Ubuntu: `sudo apt install ./netwatch-desktop_*_amd64.deb`
+            Fedora: `sudo dnf install ./netwatch-desktop-*.x86_64.rpm`
+
+            Both packages give the binary `cap_net_raw`, so the packets tab can capture without root. `sudo setcap -r /usr/bin/netwatch-desktop` takes it away, but every upgrade or reinstall of the package grants it again, so run it after each one. To keep capture off for good, use the tarball and don't grant it.
+
+            Anything else:
+            ```
+            tar xzf netwatch-desktop-linux-x86_64.tar.gz
+            sudo cp -r netwatch-desktop-linux-x86_64/bin netwatch-desktop-linux-x86_64/share /usr/local/
+            sudo setcap cap_net_raw=ep /usr/local/bin/netwatch-desktop
+            ```
+
+            Check a download with `sha256sum --ignore-missing -c SHA256SUMS`, or `gh attestation verify <file> -R ${{ github.repository }}`.
+          files: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.rpm
+            dist/SHA256SUMS

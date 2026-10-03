@@ -55,3 +55,85 @@ serde_json = "1"
 # The README screenshots carry a stamp in a PNG text chunk, which image's
 # encoder can't write. Already in the lockfile as image's PNG codec.
 png = "0.18"
+
+# Linux packages. release.yml builds both with packaging/linux/release.sh, from
+# one binary built on Ubuntu 22.04 with libpcap linked in.
+[package.metadata.deb]
+maintainer = "Matt Hartley <matthew.t.hartley@gmail.com>"
+copyright = "2025-2026, Matt Hartley"
+license-file = ["LICENSE", "0"]
+section = "net"
+priority = "optional"
+# $auto is glibc, found by dpkg-shlibdeps. winit and glutin open
+# the display and GL libraries with dlopen, which dpkg-shlibdeps can't see:
+# Wayland, X11, xkbcommon for the keyboard on both, EGL and GLX. The postinst
+# runs setcap from libcap2-bin.
+depends = "$auto, libcap2-bin, libxkbcommon0, libxkbcommon-x11-0, libegl1, libgl1, libwayland-client0, libwayland-egl1, libx11-6, libx11-xcb1, libxcb1, libxcursor1, libxi6"
+extended-description = """\
+Shows which programs on this computer use the network, how much, and where \
+to. Packet capture, interfaces, latency and DNS health, and a diagnosis of \
+what's wrong, over the same collectors as the netwatch terminal app. \
+Everything runs locally and nothing is uploaded."""
+maintainer-scripts = "packaging/debian/"
+assets = [
+    ["target/release/netwatch-desktop", "usr/bin/netwatch-desktop", "755"],
+    ["packaging/linux/netwatch-desktop.desktop", "usr/share/applications/netwatch-desktop.desktop", "644"],
+    ["assets/icon/netwatch-desktop.svg", "usr/share/icons/hicolor/scalable/apps/netwatch-desktop.svg", "644"],
+    ["assets/icon/netwatch-desktop-16.png", "usr/share/icons/hicolor/16x16/apps/netwatch-desktop.png", "644"],
+    ["assets/icon/netwatch-desktop-32.png", "usr/share/icons/hicolor/32x32/apps/netwatch-desktop.png", "644"],
+    ["assets/icon/netwatch-desktop-48.png", "usr/share/icons/hicolor/48x48/apps/netwatch-desktop.png", "644"],
+    ["assets/icon/netwatch-desktop-64.png", "usr/share/icons/hicolor/64x64/apps/netwatch-desktop.png", "644"],
+    ["assets/icon/netwatch-desktop-128.png", "usr/share/icons/hicolor/128x128/apps/netwatch-desktop.png", "644"],
+    ["assets/icon/netwatch-desktop-256.png", "usr/share/icons/hicolor/256x256/apps/netwatch-desktop.png", "644"],
+    ["assets/icon/netwatch-desktop-512.png", "usr/share/icons/hicolor/512x512/apps/netwatch-desktop.png", "644"],
+    ["README.md", "usr/share/doc/netwatch-desktop/README.md", "644"],
+    # The binary carries these fonts and libpcap's code.
+    ["assets/fonts/LICENSE-IBMPlex.txt", "usr/share/doc/netwatch-desktop/LICENSE-IBMPlex.txt", "644"],
+    ["assets/fonts/LICENSE-AdwaitaMono.txt", "usr/share/doc/netwatch-desktop/LICENSE-AdwaitaMono.txt", "644"],
+    ["packaging/linux/LICENSE-libpcap", "usr/share/doc/netwatch-desktop/LICENSE-libpcap", "644"],
+]
+
+[package.metadata.generate-rpm]
+license = "MIT"
+# Off because cargo-generate-rpm's own scan, used where rpm's find-requires
+# isn't installed (as on the Ubuntu builder), writes glibc requirements no
+# package provides, such as `libc.so.6(GLIBC_2.18)[WEAK](64bit)`. The
+# requirements below replace it.
+auto-req = "no"
+# rpm sets the capability itself as it installs the file, and `rpm -V` checks
+# it, so the .rpm needs no setcap script. It's the grant the .deb's postinst
+# and the first-run sheet use.
+assets = [
+    { source = "target/release/netwatch-desktop", dest = "/usr/bin/netwatch-desktop", mode = "755", caps = "cap_net_raw=ep" },
+    { source = "packaging/linux/netwatch-desktop.desktop", dest = "/usr/share/applications/netwatch-desktop.desktop", mode = "644" },
+    { source = "assets/icon/netwatch-desktop.svg", dest = "/usr/share/icons/hicolor/scalable/apps/netwatch-desktop.svg", mode = "644" },
+    { source = "assets/icon/netwatch-desktop-16.png", dest = "/usr/share/icons/hicolor/16x16/apps/netwatch-desktop.png", mode = "644" },
+    { source = "assets/icon/netwatch-desktop-32.png", dest = "/usr/share/icons/hicolor/32x32/apps/netwatch-desktop.png", mode = "644" },
+    { source = "assets/icon/netwatch-desktop-48.png", dest = "/usr/share/icons/hicolor/48x48/apps/netwatch-desktop.png", mode = "644" },
+    { source = "assets/icon/netwatch-desktop-64.png", dest = "/usr/share/icons/hicolor/64x64/apps/netwatch-desktop.png", mode = "644" },
+    { source = "assets/icon/netwatch-desktop-128.png", dest = "/usr/share/icons/hicolor/128x128/apps/netwatch-desktop.png", mode = "644" },
+    { source = "assets/icon/netwatch-desktop-256.png", dest = "/usr/share/icons/hicolor/256x256/apps/netwatch-desktop.png", mode = "644" },
+    { source = "assets/icon/netwatch-desktop-512.png", dest = "/usr/share/icons/hicolor/512x512/apps/netwatch-desktop.png", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/netwatch-desktop/README.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/licenses/netwatch-desktop/LICENSE", mode = "644", doc = true },
+    { source = "assets/fonts/LICENSE-IBMPlex.txt", dest = "/usr/share/licenses/netwatch-desktop/LICENSE-IBMPlex.txt", mode = "644", doc = true },
+    { source = "assets/fonts/LICENSE-AdwaitaMono.txt", dest = "/usr/share/licenses/netwatch-desktop/LICENSE-AdwaitaMono.txt", mode = "644", doc = true },
+    { source = "packaging/linux/LICENSE-libpcap", dest = "/usr/share/licenses/netwatch-desktop/LICENSE-libpcap", mode = "644", doc = true },
+]
+
+# glibc at the floor packaging/linux/release.sh checks the binary against,
+# then the .deb's depends by soname, which Fedora and openSUSE both provide.
+[package.metadata.generate-rpm.requires]
+glibc = ">= 2.35"
+"libgcc_s.so.1()(64bit)" = "*"
+"libxkbcommon.so.0()(64bit)" = "*"
+"libxkbcommon-x11.so.0()(64bit)" = "*"
+"libEGL.so.1()(64bit)" = "*"
+"libGL.so.1()(64bit)" = "*"
+"libwayland-client.so.0()(64bit)" = "*"
+"libwayland-egl.so.1()(64bit)" = "*"
+"libX11.so.6()(64bit)" = "*"
+"libX11-xcb.so.1()(64bit)" = "*"
+"libxcb.so.1()(64bit)" = "*"
+"libXcursor.so.1()(64bit)" = "*"
+"libXi.so.6()(64bit)" = "*"
