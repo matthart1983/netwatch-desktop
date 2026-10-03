@@ -136,7 +136,8 @@ pub struct Gesture {
 /// 40 pt line at 1/200 per pt, exponentiated), spread over a few frames,
 /// so a notch moves exactly one preset; at ×1.1 it would move two.
 pub const GESTURE_STEP: f32 = 1.2;
-/// A pause this long, in seconds, ends a gesture and drops its remainder.
+/// A pause this long, in seconds, ends a gesture and drops its remainder;
+/// so does a change of direction.
 const GESTURE_IDLE: f64 = 0.4;
 
 impl Gesture {
@@ -146,11 +147,15 @@ impl Gesture {
         if !factor.is_finite() || factor <= 0.0 || (factor - 1.0).abs() < 1e-6 {
             return 0;
         }
-        if time - self.last > GESTURE_IDLE {
+        let log = factor.ln();
+        // A pause ends the gesture, and so does turning back: a notch is
+        // only a little over one step, so the remainder of a few notches
+        // up would swallow the first notch down.
+        if time - self.last > GESTURE_IDLE || self.log * log < 0.0 {
             self.log = 0.0;
         }
         self.last = time;
-        self.log += factor.ln();
+        self.log += log;
         let threshold = GESTURE_STEP.ln();
         let steps = (self.log / threshold).trunc();
         self.log -= steps * threshold;
@@ -316,5 +321,24 @@ mod tests {
         assert_eq!(g.feed(1.05, 5.0), 0);
         assert_eq!(g.feed(1.0, 5.1), 0);
         assert_eq!(g.feed(f32::NAN, 5.2), 0);
+    }
+
+    #[test]
+    fn turning_back_without_a_pause_moves_back_one_preset() {
+        let per_frame = (0.2_f32 / 6.0).exp();
+        let mut g = Gesture::default();
+        let mut t = 1.0;
+        let mut notch = |g: &mut Gesture, factor: f32| -> i32 {
+            (0..6)
+                .map(|_| {
+                    t += 1.0 / 60.0;
+                    g.feed(factor, t)
+                })
+                .sum()
+        };
+        assert_eq!(notch(&mut g, per_frame), 1);
+        assert_eq!(notch(&mut g, per_frame), 1);
+        assert_eq!(notch(&mut g, 1.0 / per_frame), -1);
+        assert_eq!(notch(&mut g, per_frame), 1);
     }
 }

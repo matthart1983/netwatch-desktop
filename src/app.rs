@@ -2887,6 +2887,25 @@ mod tests {
         assert_eq!(app.prefs.zoom, 1.5);
     }
     #[test]
+    fn ctrl_scroll_back_one_notch_right_after_two_up_moves_one_preset() {
+        let mut app = app_with(Prefs::default());
+        let mut f = Frames::new();
+        f.launch(&mut app);
+        let notch = |y: f32| egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: vec2(0.0, y),
+            modifiers: egui::Modifiers::COMMAND,
+        };
+        // Notches 0.15 s apart, inside the pause that ends a gesture.
+        for (y, zoom) in [(1.0, 1.25), (1.0, 1.5), (-1.0, 1.25)] {
+            f.run(&mut app, vec![notch(y)]);
+            for _ in 0..8 {
+                f.run(&mut app, vec![]);
+            }
+            assert_eq!(f.ctx.zoom_factor(), zoom, "after notch {y}");
+        }
+    }
+    #[test]
     fn the_palette_lists_every_text_size_and_runs_them() {
         let mut app = app_with(Prefs::default());
         let s = crate::backend::tests::snapshot();
