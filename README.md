@@ -4,7 +4,7 @@ See which programs on this computer use the network, and what's wrong with it. E
 
 ![The dashboard. All screenshots are drawn from synthetic data](docs/screenshots/dashboard.png)
 
-netwatch desktop is the window version of [netwatch](https://github.com/matthart1983/netwatch), the terminal network monitor. It links the same `netwatch` library and runs the same collectors, diagnose engine and egress linter, so the two agree about what they see. In a window you also get a mouse, a command palette, text you can make larger, and room for more than 80 columns. You don't need the terminal tool installed. If you have it, both read the same `config.toml`, so a theme or graph style set in one shows in the other.
+netwatch desktop is the window version of [netwatch](https://github.com/matthart1983/netwatch), the terminal network monitor. It links the same `netwatch` library and runs the same collectors, diagnose engine and egress linter, so the two agree about what they see. In a window you also get a mouse, a command palette, text you can make larger, and room for more than 80 columns. You don't need the terminal tool installed. If you have it, both read the same `config.toml`, so a graph style set in one shows in the other. Each keeps its own theme.
 
 It is not a remote dashboard. There is no server and no second engine. The app starts netwatch's runtime on a background thread and draws what that runtime sees on this machine.
 
