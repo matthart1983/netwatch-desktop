@@ -131,6 +131,23 @@ pub(crate) fn footer_hints() -> Vec<Hint> {
     ]
 }
 
+/// Space between panels, in points.
+const GAP: f32 = 8.0;
+/// Narrower than this, in points, the panels stack into one column.
+const ONE_COLUMN: f32 = 440.0;
+/// Panel heights in one column.
+const THROUGHPUT_H: f32 = 150.0;
+const REACH_H: f32 = 114.0;
+/// Shorter than this, the two columns scroll rather than cut a probe or
+/// show fewer than three talkers.
+const BODY_MIN: f32 = REACH_H + GAP + 52.0 + 20.0 * 3.0;
+
+/// The talkers panel for `rows` talkers, three to eight of them, in one
+/// column.
+fn talkers_height(rows: usize) -> f32 {
+    52.0 + 20.0 * rows.clamp(3, 8) as f32
+}
+
 /// Pads a panel body down to `bottom` so the panel fills its column.
 fn fill_to(ui: &mut Ui, bottom: f32) {
     let rest = bottom - ui.min_rect().bottom();
@@ -184,15 +201,18 @@ impl Lite {
                             ui_kit::mono("☰ menu", theme::LABEL, theme::text2()),
                             |ui| {
                                 ui.set_min_width(220.0);
-                                if let Some(change) = crate::zoom::menu(ui, ui.ctx().zoom_factor())
-                                {
-                                    cx.go(Nav::Zoom(change));
-                                }
-                                ui_kit::rule(ui);
-                                if ui.button("full view  L").clicked() {
-                                    cx.go(Nav::SetView("full"));
-                                    ui.close_menu();
-                                }
+                                ui_kit::menu_body(ui, |ui| {
+                                    if let Some(change) =
+                                        crate::zoom::menu(ui, ui.ctx().zoom_factor())
+                                    {
+                                        cx.go(Nav::Zoom(change));
+                                    }
+                                    ui_kit::rule(ui);
+                                    if ui.button("full view  L").clicked() {
+                                        cx.go(Nav::SetView("full"));
+                                        ui.close_menu();
+                                    }
+                                });
                             },
                         )
                     });
@@ -278,22 +298,40 @@ impl Lite {
             });
         });
 
-        // Body.
+        // Body: throughput beside reachability over talkers. Large text
+        // sizes in a small window stack the three in one column; either
+        // way, a body too short for them scrolls.
         let body = Rect::from_min_max(
             pos2(full.left(), title.bottom() + 4.0),
-            pos2(full.right(), footer.top() - 8.0),
+            pos2(full.right(), (footer.top() - 8.0).max(title.bottom() + 4.0)),
         );
-        let gap = 8.0;
-        let left_w = ((body.width() - gap) * 0.54).floor();
-        let left = Rect::from_min_size(body.min, vec2(left_w, body.height()));
-        let right = Rect::from_min_max(pos2(left.right() + gap, body.top()), body.max);
-        self.throughput(ui, left, s);
-        let reach_h = 114.0_f32.min(right.height() * 0.45);
-        let reach = Rect::from_min_size(right.min, vec2(right.width(), reach_h));
-        let talk = Rect::from_min_max(pos2(right.left(), reach.bottom() + gap), right.max);
-        self.reachability(ui, reach, s);
-        if let Some(k) = self.talkers(ui, talk, cx) {
-            clicked = Some(k);
+        let one_column = body.width() < ONE_COLUMN;
+        let need = if one_column {
+            THROUGHPUT_H + REACH_H + talkers_height(self.visible(s).len()) + GAP * 2.0
+        } else {
+            BODY_MIN
+        };
+        let key = if body.height() >= need {
+            self.body(ui, body, one_column, cx)
+        } else {
+            ui.allocate_ui_at_rect(body, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_source("lite_body")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let area = Rect::from_min_size(
+                            ui.max_rect().min,
+                            vec2(ui.available_width(), need),
+                        );
+                        ui.allocate_rect(area, Sense::hover());
+                        self.body(ui, area, one_column, cx)
+                    })
+                    .inner
+            })
+            .inner
+        };
+        if key.is_some() {
+            clicked = key;
         }
 
         if let Some(key) = clicked {
@@ -301,6 +339,30 @@ impl Lite {
                 cx.go(Nav::Key(key));
             }
         }
+    }
+
+    fn body(&mut self, ui: &mut Ui, body: Rect, one_column: bool, cx: &mut Cx) -> Option<Key> {
+        let s = cx.s;
+        if one_column {
+            let throughput = Rect::from_min_size(body.min, vec2(body.width(), THROUGHPUT_H));
+            let reach = Rect::from_min_size(
+                pos2(body.left(), throughput.bottom() + GAP),
+                vec2(body.width(), REACH_H),
+            );
+            let talk = Rect::from_min_max(pos2(body.left(), reach.bottom() + GAP), body.max);
+            self.throughput(ui, throughput, s);
+            self.reachability(ui, reach, s);
+            return self.talkers(ui, talk, cx);
+        }
+        let left_w = ((body.width() - GAP) * 0.54).floor();
+        let left = Rect::from_min_size(body.min, vec2(left_w, body.height()));
+        let right = Rect::from_min_max(pos2(left.right() + GAP, body.top()), body.max);
+        self.throughput(ui, left, s);
+        let reach_h = REACH_H.min(right.height() * 0.45);
+        let reach = Rect::from_min_size(right.min, vec2(right.width(), reach_h));
+        let talk = Rect::from_min_max(pos2(right.left(), reach.bottom() + GAP), right.max);
+        self.reachability(ui, reach, s);
+        self.talkers(ui, talk, cx)
     }
 
     fn throughput(&mut self, ui: &mut Ui, rect: Rect, s: &Snapshot) {
@@ -972,6 +1034,80 @@ mod tests {
 
         assert!(texts.iter().any(|t| t == "1.1 MB/s"));
         assert!(texts.iter().any(|t| t == "ddiagnose"));
+    }
+
+    /// The text on screen, not clipped or scrolled away, after a wheel
+    /// scroll of `scroll` pt over the body.
+    fn on_screen(lite: &mut Lite, s: &Snapshot, size: egui::Vec2, scroll: f32) -> Vec<String> {
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        theme::apply(&ctx);
+        let mut h = H::new();
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), size);
+        let mut shown = vec![];
+        for frame in 0..40 {
+            let events = match frame {
+                4 => vec![egui::Event::PointerMoved(screen.center())],
+                5 if scroll != 0.0 => vec![egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: vec2(0.0, -scroll),
+                    modifiers: Default::default(),
+                }],
+                _ => vec![],
+            };
+            let out = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    time: Some(frame as f64 / 60.0),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::none().inner_margin(8.0))
+                        .show(ctx, |ui| lite.draw(ui, &mut h.cx(s)));
+                },
+            );
+            shown = out
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Text(t) => {
+                        let rect = t.galley.rect.translate(t.pos.to_vec2());
+                        (c.clip_rect.contains_rect(rect) && screen.contains_rect(rect))
+                            .then(|| t.galley.text().to_string())
+                    }
+                    _ => None,
+                })
+                .collect();
+        }
+        shown
+    }
+
+    #[test]
+    fn small_windows_stack_one_column_and_scroll_to_every_probe_and_talker() {
+        let s = fixture();
+        // Lite's smallest window, 720×420 px, at 200% and 300%.
+        for size in [vec2(360.0, 210.0), vec2(240.0, 140.0)] {
+            let top = on_screen(&mut Lite::default(), &s, size, 0.0);
+            assert!(top.iter().any(|t| t == "throughput"), "{size:?}: {top:?}");
+            let mut seen = top;
+            for step in 1..24 {
+                seen.extend(on_screen(
+                    &mut Lite::default(),
+                    &s,
+                    size,
+                    step as f32 * 30.0,
+                ));
+            }
+            // Whole names, not cut to a stub beside the rates.
+            for want in ["gateway", "dns", "internet", "unattributed", "curl", "ncat"] {
+                assert!(
+                    seen.iter().any(|t| t == want),
+                    "{size:?}: {want} in {seen:?}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -529,11 +529,42 @@ fn finding_job(issue: &Issue, width: f32) -> LayoutJob {
     job
 }
 
+/// Health's three rows plus a line or two per finding.
+fn health_needed(findings: usize) -> f32 {
+    30.0 + 12.0 + 3.0 * 20.0 + 12.0 + 22.0 * findings.clamp(1, 3) as f32 + 8.0
+}
+
+/// A throughput plot with its axes, under its head.
+const THROUGHPUT_MIN: f32 = 150.0;
+/// Narrower than this, in points, throughput sits above health.
+const STACK_WIDTH: f32 = 480.0;
+
+/// The middle row's minimum: health beside a throughput plot, or both
+/// when they stack.
+pub fn middle_needed(findings: usize, stacked: bool) -> f32 {
+    if stacked {
+        THROUGHPUT_MIN + GAP + health_needed(findings)
+    } else {
+        health_needed(findings).max(THROUGHPUT_MIN)
+    }
+}
+
+/// The dashboard's minimum height: the cards, the middle row, then three
+/// connections. A shorter central area scrolls rather than squeezing a
+/// panel to its header.
+pub fn min_height(findings: usize, rows: usize, fold: bool, stacked: bool) -> f32 {
+    card_height(0.0)
+        + GAP
+        + middle_needed(findings, stacked)
+        + GAP
+        + conns_needed(rows.min(3), fold)
+}
+
 /// Heights of the middle row (throughput · health) and the connections
 /// panel. Health needs its three rows plus a line or two per finding; the
 /// connections panel keeps at least a header and three rows.
 pub fn split_rest(rest: f32, findings: usize) -> (f32, f32) {
-    let health = 30.0 + 12.0 + 3.0 * 20.0 + 12.0 + 22.0 * findings.clamp(1, 3) as f32 + 8.0;
+    let health = health_needed(findings);
     let conns_min = 64.0 + 30.0 + 2.0 * (ui_kit::ROW_HEIGHT + 2.0);
     let middle = health
         .max(rest * 0.34)
@@ -560,6 +591,69 @@ pub fn rules_live(s: &Snapshot) -> (usize, usize) {
 }
 
 impl Dashboard {
+    /// Cards, throughput beside health, then connections, in `area`.
+    /// `scrolled`: `area` is the dashboard's minimum height, in a scroll.
+    fn layout(&mut self, ui: &mut Ui, area: Rect, scrolled: bool, cx: &mut Cx) {
+        // Hero row.
+        let s = cx.s;
+        let cards = {
+            let [g, d, i] = rtt_cards(s);
+            [g, d, i, loss_card(s), self.retrans_card(s)]
+        };
+        let card_w = (area.width() - GAP * 4.0) / 5.0;
+        let card_h = card_height(card_w);
+        for (n, card) in cards.iter().enumerate() {
+            let rect = Rect::from_min_size(
+                pos2(area.left() + n as f32 * (card_w + GAP), area.top()),
+                vec2(card_w, card_h),
+            );
+            paint_card(ui, rect, card);
+        }
+
+        // Middle and bottom rows share what's left.
+        let rest_top = area.top() + card_h + GAP;
+        let rest = area.bottom() - rest_top - GAP;
+        let (rows, listeners) = Self::rows(s);
+        let stacked = area.width() < STACK_WIDTH;
+        let least = middle_needed(s.issues.len(), stacked);
+        let middle_h = if scrolled {
+            // At its minimum height: the middle row above three connections.
+            least
+        } else {
+            let needed = conns_needed(rows.len(), !listeners.is_empty());
+            let (middle_h, _) = split_rest(rest, s.issues.len());
+            // The connections panel sizes to its rows; the graphs take the rest.
+            let middle_h = middle_h.max(rest - needed);
+            if stacked {
+                middle_h.max(least)
+            } else {
+                middle_h
+            }
+        };
+        let middle = Rect::from_min_size(pos2(area.left(), rest_top), vec2(area.width(), middle_h));
+        let (throughput, health) = if stacked {
+            let health_h = health_needed(s.issues.len());
+            let split = middle.bottom() - health_h - GAP;
+            (
+                Rect::from_min_max(middle.min, pos2(middle.right(), split)),
+                Rect::from_min_max(pos2(middle.left(), split + GAP), middle.max),
+            )
+        } else {
+            let health_w = (area.width() * 0.38).clamp(210.0, 360.0);
+            (
+                Rect::from_min_max(
+                    middle.min,
+                    pos2(middle.right() - health_w - GAP, middle.bottom()),
+                ),
+                Rect::from_min_max(pos2(middle.right() - health_w, middle.top()), middle.max),
+            )
+        };
+        self.throughput(ui, throughput, cx);
+        self.health(ui, health, cx.s);
+        let bottom = Rect::from_min_max(pos2(area.left(), middle.bottom() + GAP), area.max);
+        self.connections(ui, bottom, cx);
+    }
+
     fn throughput(&mut self, ui: &mut Ui, rect: Rect, cx: &mut Cx) {
         let s = cx.s;
         let iface = s.interfaces.iter().find(|i| i.name == s.interface);
@@ -891,44 +985,29 @@ impl Screen for Dashboard {
         if !cx.paused {
             self.tick(cx.s);
         }
-        let area = ui.available_rect_before_wrap();
-        ui.allocate_rect(area, Sense::hover());
-        let s = cx.s;
-
-        // Hero row.
-        let cards = {
-            let [g, d, i] = rtt_cards(s);
-            [g, d, i, loss_card(s), self.retrans_card(s)]
-        };
-        let card_w = (area.width() - GAP * 4.0) / 5.0;
-        let card_h = card_height(card_w);
-        for (n, card) in cards.iter().enumerate() {
-            let rect = Rect::from_min_size(
-                pos2(area.left() + n as f32 * (card_w + GAP), area.top()),
-                vec2(card_w, card_h),
-            );
-            paint_card(ui, rect, card);
-        }
-
-        // Middle and bottom rows share what's left.
-        let rest_top = area.top() + card_h + GAP;
-        let rest = area.bottom() - rest_top - GAP;
-        let (rows, listeners) = Self::rows(s);
-        let needed = conns_needed(rows.len(), !listeners.is_empty());
-        let (middle_h, _) = split_rest(rest, s.issues.len());
-        // The connections panel sizes to its rows; the graphs take the rest.
-        let middle_h = middle_h.max(rest - needed);
-        let middle = Rect::from_min_size(pos2(area.left(), rest_top), vec2(area.width(), middle_h));
-        let health_w = (area.width() * 0.38).clamp(210.0, 360.0);
-        let throughput = Rect::from_min_max(
-            middle.min,
-            pos2(middle.right() - health_w - GAP, middle.bottom()),
+        let viewport = ui.available_rect_before_wrap();
+        let (rows, listeners) = Self::rows(cx.s);
+        let need = min_height(
+            cx.s.issues.len(),
+            rows.len(),
+            !listeners.is_empty(),
+            viewport.width() < STACK_WIDTH,
         );
-        let health = Rect::from_min_max(pos2(middle.right() - health_w, middle.top()), middle.max);
-        self.throughput(ui, throughput, cx);
-        self.health(ui, health, cx.s);
-        let bottom = Rect::from_min_max(pos2(area.left(), middle.bottom() + GAP), area.max);
-        self.connections(ui, bottom, cx);
+        if viewport.height() >= need {
+            ui.allocate_rect(viewport, Sense::hover());
+            self.layout(ui, viewport, false, cx);
+            return;
+        }
+        // Too short for every panel (large text sizes): the panels keep
+        // their minimum heights and the page scrolls.
+        egui::ScrollArea::vertical()
+            .id_source("dashboard_page")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let area = Rect::from_min_size(ui.max_rect().min, vec2(ui.available_width(), need));
+                ui.allocate_rect(area, Sense::hover());
+                self.layout(ui, area, true, cx);
+            });
     }
 
     fn inspector_width(&self) -> Option<f32> {

@@ -2,7 +2,8 @@
 //! previously granted capability is lost. Left: text size, purpose, platform
 //! tabs, the measured capability checklist, the exact grant for the running
 //! executable and the way on. Right: the reference permissions matrix,
-//! optional inputs and what leaves the host.
+//! optional inputs and what leaves the host. A narrow sheet stacks the two
+//! into one scrolling column; either way continue stays on screen.
 use crate::backend::Snapshot;
 use crate::shell::{Cx, Hint, Key, Nav, Sheet, SheetKey, Toast};
 use crate::{theme, ui_kit};
@@ -11,6 +12,9 @@ use netwatch::runtime::capabilities::{CapabilitySnapshot, State};
 use std::sync::Arc;
 
 pub const PLATFORMS: [&str; 3] = ["linux", "macos", "windows"];
+
+/// Narrower than this, in points, the two columns stack into one.
+const TWO_COLUMNS: f32 = 900.0;
 
 /// Permissions matrix from netwatch docs/REFERENCE.md#permissions, verbatim
 /// rows: (feature, without privileges, with grant / sudo).
@@ -234,6 +238,21 @@ tcp metrics are not available on windows."
     }
 }
 
+/// A row that wraps when narrow, its items centred on rows `height` tall
+/// (egui's wrapping rows are a button tall, shorter than a choice). Labels
+/// in it must not wrap, or egui sets them at the top of the row.
+fn wrapped_row(ui: &mut Ui, height: f32, add: impl FnOnce(&mut Ui)) {
+    ui.scope(|ui| {
+        ui.spacing_mut().interact_size.y = height;
+        ui.horizontal_wrapped(add);
+    });
+}
+
+/// The height of a [`choice`] at `size`.
+fn choice_height(ui: &Ui, size: f32) -> f32 {
+    ui.fonts(|f| f.row_height(&FontId::monospace(size))) + 6.0
+}
+
 /// A selectable tab in a row of choices (platform, text size).
 fn choice(ui: &mut Ui, text: &str, size: f32, active: bool) -> bool {
     let galley =
@@ -268,8 +287,11 @@ pub struct FirstRun {
     checked: Option<(Arc<CapabilitySnapshot>, String)>,
     /// Text `y` asked to copy; written to the clipboard on the next draw.
     copy: Option<String>,
+    /// The scrolling content's height and the pinned actions' beneath it,
+    /// measured on the previous frame, and all the actions' when pinned.
     bottom_h: f32,
     top_h: f32,
+    actions_h: f32,
     /// Set when the window is too short for two-line checklist rows.
     compact: bool,
 }
@@ -283,8 +305,9 @@ impl Default for FirstRun {
                 .unwrap_or(0),
             checked: None,
             copy: None,
-            bottom_h: 220.0,
+            bottom_h: 60.0,
             top_h: 480.0,
+            actions_h: 60.0,
             compact: false,
         }
     }
@@ -309,23 +332,25 @@ impl FirstRun {
     fn left(&mut self, ui: &mut Ui, cx: &mut Cx) -> Option<Key> {
         let mut clicked = None;
         let platform = PLATFORMS[self.platform];
-        ui.horizontal(|ui| {
-            ui.label(ui_kit::strong("◉ netwatch", 22.0, theme::accent()));
-            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                ui.label(ui_kit::mono(
-                    format!(
-                        "desktop {} · {} {} · first run",
-                        env!("CARGO_PKG_VERSION"),
-                        std::env::consts::OS,
-                        std::env::consts::ARCH
-                    ),
-                    theme::LABEL,
-                    theme::muted(),
-                ));
-            });
-        });
-        ui.horizontal(|ui| {
-            ui.label(ui_kit::mono("text size", theme::LABEL, theme::muted()));
+        let version = ui_kit::mono(
+            format!(
+                "desktop {} · {} {} · first run",
+                env!("CARGO_PKG_VERSION"),
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            ),
+            theme::LABEL,
+            theme::muted(),
+        );
+        title_row(
+            ui,
+            ui_kit::strong("◉ netwatch", 22.0, theme::accent()),
+            version,
+        );
+        wrapped_row(ui, choice_height(ui, theme::DATA), |ui| {
+            ui.add(
+                egui::Label::new(ui_kit::mono("text size", theme::LABEL, theme::muted())).extend(),
+            );
             ui.add_space(4.0);
             let now = crate::zoom::percent(ui.ctx().zoom_factor());
             for (name, size) in TEXT_SIZES {
@@ -347,20 +372,39 @@ impl FirstRun {
             .wrap(),
         );
         ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            ui.label(ui_kit::mono("platform", theme::LABEL, theme::muted()));
+        let hint = Hint::glyph(Key::Right, "←→", "platform");
+        let label = FontId::monospace(theme::LABEL);
+        let row_w = ui_kit::text_width(ui, "platform", label.clone())
+            + PLATFORMS
+                .iter()
+                .map(|p| ui_kit::text_width(ui, p, label.clone()) + 16.0)
+                .sum::<f32>()
+            + ui_kit::text_width(ui, &format!("{} {}", hint.key_text(), hint.label), label)
+            + 6.0 * ui.spacing().item_spacing.x
+            + 20.0;
+        // The ←→ hint keeps to the right while the row has room for it.
+        let one_row = row_w <= ui.available_width();
+        wrapped_row(ui, choice_height(ui, theme::LABEL), |ui| {
+            ui.add(
+                egui::Label::new(ui_kit::mono("platform", theme::LABEL, theme::muted())).extend(),
+            );
             ui.add_space(4.0);
             for (i, name) in PLATFORMS.iter().enumerate() {
                 if choice(ui, name, theme::LABEL, i == self.platform) {
                     self.platform = i;
                 }
             }
-            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                if ui_kit::key_hint(ui, &Hint::glyph(Key::Right, "←→", "platform")) {
-                    clicked = Some(Key::Right);
-                }
-            });
+            if one_row {
+                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                    if ui_kit::key_hint(ui, &hint) {
+                        clicked = Some(Key::Right);
+                    }
+                });
+            }
         });
+        if !one_row && ui_kit::key_hint(ui, &hint) {
+            clicked = Some(Key::Right);
+        }
         ui.add_space(8.0);
 
         // Checklist.
@@ -454,17 +498,11 @@ impl FirstRun {
         clicked
     }
 
-    /// Grant command and the way on; pinned beneath the checklist so the
-    /// primary action is always visible.
-    fn left_bottom(&mut self, ui: &mut Ui) -> Option<Key> {
+    /// The exact grant for the running executable, beneath the checklist.
+    fn grant(&mut self, ui: &mut Ui) -> Option<Key> {
         let mut clicked = None;
         let platform = PLATFORMS[self.platform];
-        let at = self
-            .checked
-            .as_ref()
-            .map(|(_, at)| at.clone())
-            .unwrap_or_default();
-        // Grant.
+        ui.add_space(14.0);
         ui.label(ui_kit::mono(
             "grant once, without running as root",
             theme::LABEL,
@@ -486,7 +524,7 @@ impl FirstRun {
                         theme::muted(),
                     ));
                     let copy_w = 64.0;
-                    ui.allocate_ui(vec2(ui.available_width() - copy_w, 0.0), |ui| {
+                    ui.allocate_ui(vec2((ui.available_width() - copy_w).max(0.0), 0.0), |ui| {
                         ui.add(egui::Label::new(ui_kit::data(&command)).wrap());
                     });
                     ui.with_layout(egui::Layout::right_to_left(Align::Min), |ui| {
@@ -505,59 +543,145 @@ impl FirstRun {
             ))
             .wrap(),
         );
-        ui.add_space(8.0);
+        clicked
+    }
 
-        // Actions.
-        ui.horizontal(|ui| {
+    /// The way on: continue, re-check and when it last checked. Kept on
+    /// screen beneath whatever scrolls, so continue is always visible.
+    fn actions(&mut self, ui: &mut Ui, part: Part) -> Option<Key> {
+        let mut clicked = None;
+        let at = self
+            .checked
+            .as_ref()
+            .map(|(_, at)| at.clone())
+            .unwrap_or_default();
+        wrapped_row(ui, action_height(ui), |ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            let primary = if self.capture_ready() {
-                "↵ continue"
-            } else {
-                "↵ continue without capture"
-            };
-            if action_button(ui, primary, true) {
-                clicked = Some(Key::Enter);
+            if part != Part::Rest {
+                let mut primary = if self.capture_ready() {
+                    "↵ continue"
+                } else {
+                    "↵ continue without capture"
+                };
+                // Too narrow for the whole label: the short one does the same.
+                if action_width(ui, primary) > ui.available_width() {
+                    primary = "↵ continue";
+                }
+                if action_button(ui, primary, true) {
+                    clicked = Some(Key::Enter);
+                }
+                ui.add_space(6.0);
             }
-            ui.add_space(6.0);
+            if part == Part::Continue {
+                return;
+            }
             if action_button(ui, "r re-check", false) {
                 clicked = Some(Key::Char('r'));
             }
             ui.add_space(12.0);
-            ui.label(ui_kit::mono(
-                if at.is_empty() {
-                    "not checked yet".to_string()
-                } else {
-                    format!("checked {at}")
-                },
-                theme::LABEL,
-                theme::text2(),
-            ));
+            ui.add(
+                egui::Label::new(ui_kit::mono(
+                    if at.is_empty() {
+                        "not checked yet".to_string()
+                    } else {
+                        format!("checked {at}")
+                    },
+                    theme::LABEL,
+                    theme::text2(),
+                ))
+                .extend(),
+            );
         });
-        ui.add_space(2.0);
-        ui.label(ui_kit::mono(
-            "shown once · , settings → capabilities later",
-            theme::LABEL,
-            theme::muted(),
-        ));
+        if part != Part::Continue {
+            ui.add_space(2.0);
+            ui.label(ui_kit::mono(
+                "shown once · , settings → capabilities later",
+                theme::LABEL,
+                theme::muted(),
+            ));
+        }
+        clicked
+    }
+
+    /// The checklist and grant (and, in one column, the reference beneath
+    /// them) scroll in `rect`; the actions sit right beneath them when they
+    /// fit, else pinned to the bottom of `rect`. A sheet too short for all
+    /// the actions pins continue alone and scrolls the rest.
+    fn column(&mut self, ui: &mut Ui, rect: Rect, cx: &mut Cx, one: bool) -> Option<Key> {
+        let mut clicked = None;
+        let short = self.actions_h > rect.height() / 3.0;
+        let bottom_h = self.bottom_h.min(rect.height());
+        let bottom_top = (rect.top() + self.top_h + 8.0)
+            .min(rect.bottom() - bottom_h)
+            .max(rect.top());
+        let bottom = Rect::from_min_max(pos2(rect.left(), bottom_top), rect.max);
+        let top = Rect::from_min_max(
+            rect.min,
+            pos2(rect.right(), (bottom.top() - 8.0).max(rect.top())),
+        );
+        let used = ui
+            .allocate_ui_at_rect(bottom, |ui| {
+                let part = if short { Part::Continue } else { Part::All };
+                if let Some(k) = self.actions(ui, part) {
+                    clicked = Some(k);
+                }
+            })
+            .response
+            .rect;
+        if !short {
+            self.actions_h = used.height();
+        }
+        if (used.height() - self.bottom_h).abs() > 0.5 {
+            self.bottom_h = used.height();
+            ui.ctx().request_repaint();
+        }
+        if self.top_h > top.height() {
+            // Content scrolls behind the pinned actions.
+            ui.painter().hline(
+                rect.x_range(),
+                bottom.top() - 4.0,
+                Stroke::new(1.0_f32, theme::border()),
+            );
+        }
+        ui.allocate_ui_at_rect(top, |ui| {
+            egui::ScrollArea::vertical()
+                .id_source("first_run_left")
+                .auto_shrink([false, true])
+                .min_scrolled_height(0.0)
+                .show(ui, |ui| {
+                    if let Some(k) = self.left(ui, cx) {
+                        clicked = Some(k);
+                    }
+                    if let Some(k) = self.grant(ui) {
+                        clicked = Some(k);
+                    }
+                    if short {
+                        ui.add_space(8.0);
+                        if let Some(k) = self.actions(ui, Part::Rest) {
+                            clicked = Some(k);
+                        }
+                    }
+                    if one {
+                        ui.add_space(18.0);
+                        self.right(ui, cx);
+                    }
+                    let h = ui.min_rect().height();
+                    if (h - self.top_h).abs() > 0.5 {
+                        self.top_h = h;
+                        ui.ctx().request_repaint();
+                    }
+                });
+        });
         clicked
     }
 
     fn right(&mut self, ui: &mut Ui, cx: &mut Cx) {
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label(ui_kit::mono(
-                "what you get with each level",
-                theme::LABEL,
-                theme::muted(),
-            ));
-            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                ui.label(ui_kit::mono(
-                    "docs/REFERENCE.md#permissions",
-                    theme::META,
-                    theme::muted(),
-                ));
-            });
-        });
+        title_row(
+            ui,
+            ui_kit::mono("what you get with each level", theme::LABEL, theme::muted()),
+            ui_kit::mono("docs/REFERENCE.md#permissions", theme::META, theme::muted()),
+        );
         ui.add_space(4.0);
         egui::Frame::none()
             .stroke(Stroke::new(1.0_f32, theme::border()))
@@ -565,7 +689,7 @@ impl FirstRun {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 let width = ui.available_width();
-                let col = 104.0;
+                let col = 104.0_f32.min(width * 0.25);
                 let row_h = 28.0;
                 let header =
                     |ui: &mut Ui, cells: [(&str, Color32, FontId); 3], h: f32, fill: bool| {
@@ -684,7 +808,8 @@ impl FirstRun {
                     ("○", theme::muted())
                 };
                 ui.label(ui_kit::mono(glyph, theme::DATA, color));
-                let (rect, _) = ui.allocate_exact_size(vec2(116.0, 16.0), Sense::hover());
+                let name_w = 116.0_f32.min(ui.available_width() * 0.35);
+                let (rect, _) = ui.allocate_exact_size(vec2(name_w, 16.0), Sense::hover());
                 ui_kit::paint_text(
                     ui,
                     rect,
@@ -706,14 +831,65 @@ impl FirstRun {
     }
 }
 
-/// Primary (accent ground) or secondary (bordered) action in the key-hint
-/// vocabulary: the key leads the label.
-fn action_button(ui: &mut Ui, text: &str, primary: bool) -> bool {
-    let font = if primary {
+/// `title` with `note` right-aligned on one row, or `note` on its own line
+/// beneath when the row is too narrow for both.
+fn title_row(ui: &mut Ui, title: RichText, note: RichText) {
+    let width = |ui: &Ui, text: &RichText| {
+        egui::WidgetText::from(text.clone())
+            .into_galley(
+                ui,
+                Some(egui::TextWrapMode::Extend),
+                f32::INFINITY,
+                egui::TextStyle::Body,
+            )
+            .size()
+            .x
+    };
+    if width(ui, &title) + width(ui, &note) + 16.0 <= ui.available_width() {
+        ui.horizontal(|ui| {
+            ui.label(title);
+            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                ui.label(note);
+            });
+        });
+    } else {
+        ui.add(egui::Label::new(title).truncate());
+        ui.add(egui::Label::new(note).truncate());
+    }
+}
+
+fn action_font(primary: bool) -> FontId {
+    if primary {
         theme::semibold(theme::DATA)
     } else {
         FontId::monospace(theme::DATA)
-    };
+    }
+}
+
+/// The width [`action_button`] takes for the primary `text`.
+fn action_width(ui: &Ui, text: &str) -> f32 {
+    ui_kit::text_width(ui, text, action_font(true)) + 28.0
+}
+
+/// The height of an [`action_button`].
+fn action_height(ui: &Ui) -> f32 {
+    ui.fonts(|f| f.row_height(&action_font(true))) + 14.0
+}
+
+/// Which of the actions to draw.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Part {
+    All,
+    /// Continue alone, pinned in a short sheet.
+    Continue,
+    /// Re-check and the note, scrolling beneath the grant.
+    Rest,
+}
+
+/// Primary (accent ground) or secondary (bordered) action in the key-hint
+/// vocabulary: the key leads the label.
+fn action_button(ui: &mut Ui, text: &str, primary: bool) -> bool {
+    let font = action_font(primary);
     let fg = if primary {
         theme::inverse()
     } else {
@@ -757,65 +933,36 @@ impl Sheet for FirstRun {
         if let Some(text) = self.copy.take() {
             ui.ctx().copy_text(text);
         }
-        let mut clicked = None;
         let available = ui.available_width();
-        let gap = 1.0;
-        let left_w = (available * 0.52).floor();
-        let screen = ui.ctx().screen_rect();
-        let height = (screen.bottom() - 30.0 - ui.min_rect().bottom() - 2.0)
-            .min(ui.available_height())
-            .max(200.0);
+        let height = ui.available_height().max(0.0);
         let (body, _) = ui.allocate_exact_size(vec2(available, height), Sense::hover());
-        let left = Rect::from_min_size(body.min, vec2(left_w, height));
-        let right = Rect::from_min_max(pos2(left.right() + gap, body.top()), body.max);
-        ui.painter().vline(
-            left.right(),
-            body.y_range(),
-            Stroke::new(1.0_f32, theme::border()),
-        );
-        let inner = left.shrink2(vec2(28.0, 14.0));
-        self.compact = inner.height() < 640.0;
-        // The pinned block's height is measured on the previous frame.
-        let bottom_h = self.bottom_h.min(inner.height() * 0.6);
-        // Flow beneath the checklist when it fits; otherwise pin to the bottom.
-        let bottom_top = (inner.top() + self.top_h + 14.0).min(inner.bottom() - bottom_h);
-        let bottom = Rect::from_min_max(pos2(inner.left(), bottom_top), inner.max);
-        let top = Rect::from_min_max(inner.min, pos2(inner.right(), bottom.top() - 12.0));
-        let used = ui
-            .allocate_ui_at_rect(bottom, |ui| {
-                if let Some(k) = self.left_bottom(ui) {
-                    clicked = Some(k);
-                }
-            })
-            .response
-            .rect;
-        if (used.height() - self.bottom_h).abs() > 0.5 {
-            self.bottom_h = used.height();
-            ui.ctx().request_repaint();
-        }
-        ui.allocate_ui_at_rect(top, |ui| {
-            egui::ScrollArea::vertical()
-                .id_source("first_run_left")
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    if let Some(k) = self.left(ui, cx) {
-                        clicked = Some(k);
-                    }
-                    let h = ui.min_rect().height();
-                    if (h - self.top_h).abs() > 0.5 {
-                        self.top_h = h;
-                        ui.ctx().request_repaint();
-                    }
-                });
-        });
-        ui.allocate_ui_at_rect(right.shrink2(vec2(28.0, 16.0)), |ui| {
-            ui.painter()
-                .rect_filled(right.shrink(1.0), 0.0, theme::panel());
-            egui::ScrollArea::vertical()
-                .id_source("first_run_right")
-                .auto_shrink([false, true])
-                .show(ui, |ui| self.right(ui, cx));
-        });
+        let clicked = if available < TWO_COLUMNS {
+            // One column: everything scrolls above the actions.
+            let inner = body.shrink2(vec2(16.0_f32.min(available * 0.06), 12.0));
+            self.compact = inner.height() < 640.0;
+            self.column(ui, inner, cx, true)
+        } else {
+            let left = Rect::from_min_size(body.min, vec2((available * 0.52).floor(), height));
+            let right = Rect::from_min_max(pos2(left.right() + 1.0, body.top()), body.max);
+            ui.painter().vline(
+                left.right(),
+                body.y_range(),
+                Stroke::new(1.0_f32, theme::border()),
+            );
+            let inner = left.shrink2(vec2(28.0, 14.0));
+            self.compact = inner.height() < 640.0;
+            let clicked = self.column(ui, inner, cx, false);
+            ui.allocate_ui_at_rect(right.shrink2(vec2(28.0, 16.0)), |ui| {
+                ui.painter()
+                    .rect_filled(right.shrink(1.0), 0.0, theme::panel());
+                egui::ScrollArea::vertical()
+                    .id_source("first_run_right")
+                    .auto_shrink([false, true])
+                    .min_scrolled_height(0.0)
+                    .show(ui, |ui| self.right(ui, cx));
+            });
+            clicked
+        };
         match clicked {
             Some(key) => self.key(key, cx) != SheetKey::Close,
             None => true,
@@ -1079,6 +1226,105 @@ mod tests {
         sheet.key(Key::Left, &mut cx);
         assert_eq!(sheet.platform, start);
         assert_eq!(sheet.key(Key::Enter, &mut cx), SheetKey::Close);
+    }
+
+    /// The sheet in a `size` window for a few frames, after `events`:
+    /// the text on screen (not clipped or scrolled away) and where it is.
+    fn on_screen(
+        sheet: &mut FirstRun,
+        s: &Snapshot,
+        size: egui::Vec2,
+        events: Vec<egui::Event>,
+    ) -> Vec<(String, Rect)> {
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        theme::apply(&ctx);
+        let (mut commands, mut nav): (Vec<Command>, Vec<Nav>) = (vec![], vec![]);
+        let mut toast = None;
+        let mut shared = Shared::default();
+        let mut focus = 0;
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), size);
+        let mut shown = Vec::new();
+        for frame in 0..40 {
+            let out = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    time: Some(frame as f64 / 60.0),
+                    events: if frame == 4 { events.clone() } else { vec![] },
+                    ..Default::default()
+                },
+                |ctx| {
+                    let mut cx = Cx {
+                        s,
+                        paused: false,
+                        commands: &mut commands,
+                        nav: &mut nav,
+                        toast: &mut toast,
+                        filter: None,
+                        shared: &mut shared,
+                        focus: &mut focus,
+                        compact: false,
+                    };
+                    ui_kit::sheet(ctx, "firstrun", sheet.width(), sheet.top(), |ui| {
+                        sheet.draw(ui, &mut cx)
+                    });
+                },
+            );
+            shown = out
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Text(t) => {
+                        let rect = t.galley.rect.translate(t.pos.to_vec2());
+                        (c.clip_rect.contains_rect(rect) && screen.contains_rect(rect))
+                            .then(|| (t.galley.text().to_string(), rect))
+                    }
+                    _ => None,
+                })
+                .collect();
+        }
+        shown
+    }
+
+    #[test]
+    fn continue_stays_on_screen_and_narrow_sheets_stack_into_one_column() {
+        let s = populated();
+        let find = |shown: &[(String, Rect)], text: &str| {
+            shown
+                .iter()
+                .find(|(t, _)| t.starts_with(text))
+                .map(|(_, r)| *r)
+        };
+        // 1366×768 at 200%, 900×600 at 300%, lite's 720×420 at 300%.
+        for size in [vec2(683.0, 384.0), vec2(300.0, 200.0), vec2(240.0, 140.0)] {
+            let shown = on_screen(&mut FirstRun::default(), &s, size, vec![]);
+            assert!(
+                find(&shown, "↵ continue").is_some(),
+                "{size:?}: continue off screen in {shown:?}"
+            );
+        }
+        // Narrow: the reference scrolls beneath the checklist in the same
+        // column, where the two-column sheet puts it on the right.
+        let title = |shown: &[(String, Rect)]| find(shown, "◉ netwatch").unwrap();
+        let reference = |shown: &[(String, Rect)]| find(shown, "collection and analysis").unwrap();
+        let wide = on_screen(&mut FirstRun::default(), &s, vec2(1252.0, 782.0), vec![]);
+        assert!(reference(&wide).left() > title(&wide).left() + 300.0);
+        let narrow = vec2(683.0, 384.0);
+        let scroll = vec![
+            egui::Event::PointerMoved(pos2(narrow.x / 2.0, 150.0)),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: vec2(0.0, -5000.0),
+                modifiers: Default::default(),
+            },
+        ];
+        let top = on_screen(&mut FirstRun::default(), &s, narrow, vec![]);
+        let bottom = on_screen(&mut FirstRun::default(), &s, narrow, scroll);
+        assert!(
+            (reference(&bottom).left() - title(&top).left()).abs() < 1.0,
+            "{bottom:?}"
+        );
+        assert!(find(&bottom, "↵ continue").is_some());
     }
 
     #[test]

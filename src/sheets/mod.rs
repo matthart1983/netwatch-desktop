@@ -8,20 +8,36 @@ pub mod first_run;
 pub mod recorder;
 pub mod settings;
 
-/// Sheet footer: keys on the left, an optional note right-aligned.
+/// Sheet footer: keys on the left, an optional note right-aligned. A
+/// narrow sheet wraps the keys and puts the note on a line of its own.
 pub fn sheet_footer(ui: &mut Ui, hints: &[Hint], note: &str) -> Option<Key> {
     ui_kit::rule(ui);
     let mut clicked = None;
-    ui.horizontal(|ui| {
+    let font = FontId::monospace(theme::LABEL);
+    let keys_w: f32 = hints
+        .iter()
+        .map(|h| {
+            ui_kit::text_width(ui, &format!("{} {}", h.key_text(), h.label), font.clone()) + 10.0
+        })
+        .sum();
+    let note_w = ui_kit::text_width(ui, note, FontId::monospace(theme::META));
+    let one_row = 12.0 + keys_w + 16.0 + note_w + 12.0 <= ui.available_width();
+    ui.horizontal_wrapped(|ui| {
         ui.add_space(12.0);
         clicked = ui_kit::hint_row(ui, hints);
-        if !note.is_empty() {
+        if !note.is_empty() && one_row {
             ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(12.0);
                 ui.label(ui_kit::meta(note));
             });
         }
     });
+    if !note.is_empty() && !one_row {
+        ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            ui.add(egui::Label::new(ui_kit::meta(note)).wrap());
+        });
+    }
     ui.add_space(6.0);
     clicked
 }
@@ -139,7 +155,7 @@ impl Sheet for Palette {
                 .frame(false)
                 .font(FontId::monospace(theme::DATA))
                 .hint_text("command, jump, / filter, @ host or process")
-                .desired_width(ui.available_width() - 190.0);
+                .desired_width((ui.available_width() - 190.0).max(60.0));
             let response = ui.add(edit);
             if !self.focus_requested {
                 response.request_focus();
@@ -154,8 +170,9 @@ impl Sheet for Palette {
         let count = matches.len();
         self.selected = self.selected.min(count.saturating_sub(1));
         let mut run = None;
+        // Room for the footer beneath, however short the window.
         egui::ScrollArea::vertical()
-            .max_height(360.0)
+            .max_height(360.0_f32.min(ui.available_height() - 48.0).max(48.0))
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 let mut last_group = "";
@@ -533,6 +550,92 @@ mod tests {
         if !cfg!(target_os = "macos") {
             assert_eq!(keys, "ctrl + / ctrl −");
             assert!(label.starts_with("text size · ctrl 0 reset"));
+        }
+    }
+    /// `sheet` in a `size` window, wheel-scrolled by `scroll`: where its
+    /// frame sits and the text on screen (not clipped or scrolled away).
+    fn shown(sheet: &mut dyn Sheet, size: egui::Vec2, scroll: f32) -> (Rect, Vec<String>) {
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        theme::apply(&ctx);
+        let s = crate::backend::Snapshot::empty();
+        let (mut commands, mut nav, mut toast) = (Vec::new(), Vec::new(), None);
+        let mut shared = crate::shell::Shared::default();
+        let mut focus = 0;
+        let screen = Rect::from_min_size(egui::Pos2::ZERO, size);
+        let mut texts = Vec::new();
+        for frame in 0..30 {
+            let events = match frame {
+                4 => vec![egui::Event::PointerMoved(screen.center())],
+                5 => vec![egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: vec2(0.0, -scroll),
+                    modifiers: Default::default(),
+                }],
+                _ => vec![],
+            };
+            let out = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    time: Some(frame as f64 / 60.0),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    let mut cx = Cx {
+                        s: &s,
+                        paused: false,
+                        commands: &mut commands,
+                        nav: &mut nav,
+                        toast: &mut toast,
+                        filter: None,
+                        shared: &mut shared,
+                        focus: &mut focus,
+                        compact: true,
+                    };
+                    ui_kit::sheet(ctx, "sheet", sheet.width(), sheet.top(), |ui| {
+                        sheet.draw(ui, &mut cx)
+                    });
+                },
+            );
+            texts = out
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Text(t) => {
+                        let rect = t.galley.rect.translate(t.pos.to_vec2());
+                        (c.clip_rect.contains_rect(rect) && screen.contains_rect(rect))
+                            .then(|| t.galley.text().to_string())
+                    }
+                    _ => None,
+                })
+                .collect();
+        }
+        let frame = ctx.memory(|m| m.area_rect(egui::Id::new("sheet"))).unwrap();
+        (frame, texts)
+    }
+    #[test]
+    fn sheets_stay_inside_small_windows_and_scroll_to_their_footer() {
+        // Lite's smallest window at 200% and 300%, and 1366×768 at 200%.
+        for size in [vec2(360.0, 210.0), vec2(240.0, 140.0), vec2(683.0, 384.0)] {
+            let screen = Rect::from_min_size(egui::Pos2::ZERO, size);
+            let entries = (0..40).map(|i| entry("command", &format!("command {i}")));
+            let sheets: [Box<dyn Sheet>; 2] = [
+                Box::new(Help::lite()),
+                Box::new(Palette::new(entries.collect(), Vec::new())),
+            ];
+            for mut sheet in sheets {
+                let (frame, _) = shown(sheet.as_mut(), size, 0.0);
+                assert!(
+                    screen.expand(0.5).contains_rect(frame),
+                    "{size:?}: {frame:?}"
+                );
+                let (_, texts) = shown(sheet.as_mut(), size, 5000.0);
+                assert!(
+                    texts.iter().any(|t| t == "escclose"),
+                    "{size:?}: the footer in {texts:?}"
+                );
+            }
         }
     }
     #[test]

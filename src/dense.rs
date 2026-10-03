@@ -52,6 +52,10 @@ pub struct Dense {
     cursor_group: Option<String>,
     group_keys: Vec<String>,
     scroll_to_cursor: bool,
+    /// Box 4's height above its socket rows (title, selected socket, keys,
+    /// column header), measured each frame, and how many rows fit below.
+    conns_chrome: f32,
+    pub conns_rows: f32,
     trends: [Graph; 3],
     net: Graph,
     interface: String,
@@ -70,6 +74,8 @@ impl Default for Dense {
             cursor_group: None,
             group_keys: Vec::new(),
             scroll_to_cursor: false,
+            conns_chrome: 120.0,
+            conns_rows: 0.0,
             trends: Default::default(),
             net: Default::default(),
             interface: String::new(),
@@ -158,6 +164,24 @@ impl Dense {
     fn small(&self) -> f32 {
         theme::LABEL
     }
+    /// Box 4's floor: what it measured above its rows on the last frame,
+    /// [`CONNS_MIN_ROWS`] rows (row height and spacing as `connections`
+    /// draws them), then the frame's bottom margin and stroke.
+    fn conns_min(&self) -> f32 {
+        self.conns_chrome + CONNS_MIN_ROWS * (theme::DATA + 6.0 + 2.0) + 6.0
+    }
+
+    /// The height every shown box needs for its floor. Shorter, dense
+    /// scrolls as one page rather than squeezing a box below it.
+    fn min_height(&self) -> f32 {
+        match self.zoom {
+            None => NET_MIN + MIDDLE_MIN + self.conns_min() + GAP * 2.0,
+            Some(Panel::Net) => NET_MIN,
+            Some(Panel::Connections) => self.conns_min(),
+            Some(Panel::Interfaces | Panel::Health) => MIDDLE_MIN,
+        }
+    }
+
     pub fn draw(
         &mut self,
         ui: &mut Ui,
@@ -168,8 +192,33 @@ impl Dense {
     ) -> bool {
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
         theme::dense_style(ui);
-        let area = ui.available_rect_before_wrap();
-        let rectangles = layout(area);
+        let viewport = ui.available_rect_before_wrap();
+        let need = self.min_height();
+        if viewport.height() >= need {
+            return self.boxes(ui, viewport, s, controls, selection, paused);
+        }
+        egui::ScrollArea::vertical()
+            .id_source("dense_page")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let area =
+                    Rect::from_min_size(ui.max_rect().min, egui::vec2(ui.available_width(), need));
+                ui.allocate_rect(area, egui::Sense::hover());
+                self.boxes(ui, area, s, controls, selection, paused)
+            })
+            .inner
+    }
+
+    fn boxes(
+        &mut self,
+        ui: &mut Ui,
+        area: Rect,
+        s: &Snapshot,
+        controls: &mut Controls,
+        selection: &mut Selection,
+        paused: bool,
+    ) -> bool {
+        let rectangles = layout(area, self.conns_min());
         let mut zoom = None;
         let mut drill = false;
         for (index, panel) in Panel::ALL.into_iter().enumerate() {
@@ -185,7 +234,7 @@ impl Dense {
                 ui.allocate_ui_at_rect(rect, |ui| {
                     ui.set_clip_rect(rect.intersect(ui.clip_rect()));
                     egui::Frame::none().fill(theme::panel()).stroke(egui::Stroke::new(1.0_f32, theme::border())).rounding(2.0).inner_margin(4.0).show(ui, |ui| {
-                        ui.set_min_size(rect.size() - egui::vec2(10.0, 10.0));
+                        ui.set_min_size((rect.size() - egui::vec2(10.0, 10.0)).max(egui::Vec2::ZERO));
                         ui.horizontal(|ui| {
                             if ui.small_button(RichText::new(format!("{} {}", panel.number(), panel.title())).color(theme::key_hint()).strong()).on_hover_text("Zoom this panel / restore four boxes").clicked() { zoom = Some(panel); }
                             match panel {
@@ -209,7 +258,7 @@ impl Dense {
                             Panel::Net => self.network(ui, s, controls, paused),
                             Panel::Interfaces => self.interfaces(ui, s, controls, paused),
                             Panel::Health => self.health(ui, s, controls.animate && !paused),
-                            Panel::Connections => drill = self.connections(ui, s, selection, controls.animate && !paused),
+                            Panel::Connections => drill = self.connections(ui, rect, s, selection, controls.animate && !paused),
                         }
                     });
                 });
@@ -222,10 +271,16 @@ impl Dense {
     }
     fn network(&mut self, ui: &mut Ui, s: &Snapshot, controls: &Controls, paused: bool) {
         let area = ui.available_rect_before_wrap();
-        let side = (area.width() * 0.26).clamp(280.0, 460.0);
+        // Narrow boxes (large text sizes) split evenly instead.
+        let side = (area.width() * 0.26)
+            .clamp(280.0, 460.0)
+            .min(area.width() * 0.5);
         let plot = Rect::from_min_max(
             area.min,
-            egui::pos2(area.right() - side - 8.0, area.bottom()),
+            egui::pos2(
+                (area.right() - side - 8.0).max(area.left()),
+                area.bottom().max(area.top()),
+            ),
         );
         let signals = Rect::from_min_max(egui::pos2(plot.right() + 8.0, area.top()), area.max);
         ui.allocate_ui_at_rect(plot, |ui| {
@@ -554,6 +609,7 @@ impl Dense {
     fn connections(
         &mut self,
         ui: &mut Ui,
+        rect: Rect,
         s: &Snapshot,
         selection: &mut Selection,
         animate: bool,
@@ -782,9 +838,11 @@ impl Dense {
                 header_cell(ui, spark, small + 6.0, "RX / TX · 60s", small, false);
             });
             if rows.is_empty() && display.is_empty() { ui.label("No sockets observed · collectors remain running"); }
+            // Everything above the rows sets box 4's floor next frame.
+            self.conns_chrome = ui.cursor().top() - rect.top();
             let mut scroll = egui::ScrollArea::vertical().auto_shrink([false, false]);
             if moved { if let Some(position) = header_position.or(selected.map(|i| socket_positions[i])) { scroll = scroll.vertical_scroll_offset((position as f32 * row_stride - ui.available_height() * 0.5).max(0.0)); } }
-            scroll.show_rows(ui, row_height, display.len(), |ui, range| {
+            let shown = scroll.show_rows(ui, row_height, display.len(), |ui, range| {
             for position in range {
                 let (header, index) = display[position];
                 if header {
@@ -838,6 +896,9 @@ impl Dense {
                 });
             }
             });
+            // Rows on screen: the box can run past a window that doesn't
+            // scroll, and a scrolled page can hide part of it.
+            self.conns_rows = shown.inner_rect.intersect(ui.clip_rect()).height().max(0.0) / row_stride;
         });
         if let Some(key) = toggle_group {
             self.toggle_group(&key);
@@ -934,7 +995,7 @@ fn fit_columns<const N: usize>(
             .min_by_key(|i| priority[*i]);
         match drop {
             Some(i) if rest < graph => visible[i] = false,
-            _ => return rest.max(graph.min(available * 0.5)),
+            _ => return rest.max(graph.min(available * 0.5)).max(0.0),
         }
     }
 }
@@ -985,22 +1046,43 @@ fn spark_options(height: f32, window: f64, ceiling: f64, animate: bool) -> Optio
         unit: Unit::Rate,
     }
 }
-/// NET and the IFACES/HEALTH row scale with the window; CONNS takes the rest.
-pub fn layout(area: Rect) -> [Rect; 4] {
-    let gap = 4.0;
-    let height = (area.height() - gap * 2.0).max(0.0);
-    let top = (height * 0.31).max(190.0);
-    let middle = (height * 0.24).max(150.0);
-    let half = (area.width() - gap) / 2.0;
-    let y = area.top() + top + gap;
+const GAP: f32 = 4.0;
+/// Floors, in points: NET's two rate lines around a short plot; a header
+/// and two rows for IFACES, with HEALTH scrolling its three.
+const NET_MIN: f32 = 140.0;
+const MIDDLE_MIN: f32 = 110.0;
+/// Socket rows box 4 keeps room for at any text size.
+const CONNS_MIN_ROWS: f32 = 3.0;
+
+/// NET and the IFACES/HEALTH row scale with the window; CONNS takes the
+/// rest. When the rest is under `conns_min`, NET and the middle row give
+/// up the difference, down to their own floors. Only an area too short for
+/// all three floors has the boxes run past its bottom: the caller scrolls.
+pub fn layout(area: Rect, conns_min: f32) -> [Rect; 4] {
+    let height = (area.height() - GAP * 2.0).max(0.0);
+    let mut top = (height * 0.31).max(NET_MIN);
+    let mut middle = (height * 0.24).max(MIDDLE_MIN);
+    let short = conns_min - (height - top - middle);
+    let spare = (top - NET_MIN) + (middle - MIDDLE_MIN);
+    if short > 0.0 && spare > 0.0 {
+        let give = short.min(spare) / spare;
+        top -= (top - NET_MIN) * give;
+        middle -= (middle - MIDDLE_MIN) * give;
+    }
+    let conns = (height - top - middle).max(conns_min);
+    let half = ((area.width() - GAP) / 2.0).max(0.0);
+    let y = area.top() + top + GAP;
     [
         Rect::from_min_size(area.min, egui::vec2(area.width(), top)),
         Rect::from_min_size(egui::pos2(area.left(), y), egui::vec2(half, middle)),
         Rect::from_min_size(
-            egui::pos2(area.left() + half + gap, y),
+            egui::pos2(area.left() + half + GAP, y),
             egui::vec2(half, middle),
         ),
-        Rect::from_min_max(egui::pos2(area.left(), y + middle + gap), area.max),
+        Rect::from_min_size(
+            egui::pos2(area.left(), y + middle + GAP),
+            egui::vec2(area.width(), conns),
+        ),
     ]
 }
 

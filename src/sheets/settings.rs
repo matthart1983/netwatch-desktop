@@ -392,6 +392,27 @@ fn hint_note(cfg: &NetwatchConfig, row: &Row) -> (String, &'static str) {
     }
 }
 
+/// Less room than this beside the value and a row's hint moves under the
+/// row: two lines of about 20 characters cut a warning short.
+const HINT_BESIDE_MIN: f32 = 140.0;
+
+/// A row hint wrapped to `max_rows` lines, elided past them.
+fn hint_galley(
+    ui: &Ui,
+    hint: String,
+    max_width: f32,
+    max_rows: usize,
+) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::single_section(
+        hint,
+        egui::TextFormat::simple(FontId::monospace(theme::LABEL), theme::muted()),
+    );
+    job.wrap.max_width = max_width.max(1.0);
+    job.wrap.max_rows = max_rows;
+    job.wrap.overflow_character = Some('…');
+    ui.fonts(|f| f.layout_job(job))
+}
+
 #[derive(Default)]
 pub struct Settings {
     /// The config as loaded when the sheet opened (or last saved).
@@ -505,7 +526,26 @@ impl Settings {
                     .as_ref()
                     .map(|p| tilde(&p.display().to_string()))
                     .unwrap_or_else(|| "config path unavailable".into());
-            ui.label(ui_kit::mono(path, theme::LABEL, theme::muted()));
+            // The path gives way (shortens) to the save state on the right.
+            let font = FontId::monospace(theme::LABEL);
+            let right_w = if changes > 0 {
+                ui_kit::text_width(ui, "unsaved · 00 changes", font.clone())
+                    + ui_kit::text_width(ui, "S save", font)
+                    + 16.0
+            } else {
+                ui_kit::text_width(ui, "no changes S save", font)
+            } + 14.0
+                + 4.0
+                + 3.0 * ui.spacing().item_spacing.x;
+            ui.allocate_ui(
+                vec2((ui.available_width() - right_w).max(0.0), 22.0),
+                |ui| {
+                    ui.add(
+                        egui::Label::new(ui_kit::mono(path, theme::LABEL, theme::muted()))
+                            .truncate(),
+                    )
+                },
+            );
             ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(14.0);
                 if changes > 0 {
@@ -538,13 +578,27 @@ impl Settings {
     }
 
     fn groups(&mut self, ui: &mut Ui, rect: Rect) {
+        ui.allocate_ui_at_rect(rect, |ui| {
+            ui.set_clip_rect(rect.intersect(ui.clip_rect()));
+            // Scrolls when the body is shorter than the list.
+            egui::ScrollArea::vertical()
+                .id_source("settings_groups")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    ui.add_space(8.0);
+                    self.group_rows(ui);
+                });
+        });
+    }
+
+    fn group_rows(&mut self, ui: &mut Ui) {
         let current = ROWS[self.selected].group;
-        let mut y = rect.top() + 8.0;
         for (g, name) in GROUPS.iter().enumerate() {
             let count = ROWS.iter().filter(|r| r.group == g).count();
-            let row =
-                Rect::from_min_size(pos2(rect.left() + 8.0, y), vec2(rect.width() - 16.0, 26.0));
-            let response = ui.interact(row, ui.id().with(("group", g)), Sense::click());
+            let (slot, response) =
+                ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
+            let row = slot.shrink2(vec2(8.0, 0.0));
             if g == current {
                 ui.painter().rect_filled(row, 3.0, theme::raised());
             }
@@ -582,7 +636,6 @@ impl Settings {
                     self.select(first);
                 }
             }
-            y += 28.0;
         }
     }
 
@@ -594,8 +647,11 @@ impl Settings {
         let mut clicked_row = None;
         let mut cycle_click = None;
         let width = ui.available_width();
-        let label_w = 196.0;
-        let value_w = ((width - label_w) * 0.3).clamp(150.0, 220.0);
+        // Narrow sheets (large text sizes) keep the value in view.
+        let label_w = 196.0_f32.min(width * 0.45);
+        let value_w = ((width - label_w) * 0.3)
+            .clamp(150.0, 220.0)
+            .min((width - label_w - 16.0).max(0.0));
         let note_w = 112.0;
         for (i, row) in ROWS.iter().enumerate() {
             let selected = i == self.selected;
@@ -604,7 +660,16 @@ impl Settings {
                 .as_ref()
                 .filter(|(e, _)| *e == i)
                 .map(|(_, m)| m.clone());
-            let height = if error.is_some() { 52.0 } else { 38.0 };
+            // The hint goes on its own line under the row when the room
+            // beside the value is too narrow to read it: dropping it would
+            // drop the privacy warnings (geoip_online, insights).
+            let (hint, note) = hint_note(&cfg, row);
+            let reserve = if note.is_empty() { 0.0 } else { note_w + 12.0 };
+            let beside = width - reserve - 16.0 - label_w - (value_w + 24.0).max(96.0);
+            let under = (!hint.is_empty() && beside < HINT_BESIDE_MIN)
+                .then(|| hint_galley(ui, hint.clone(), width - 32.0, 3));
+            let under_h = under.as_ref().map_or(0.0, |g| g.size().y + 4.0);
+            let height = if error.is_some() { 52.0 } else { 38.0 } + under_h;
             let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
             if self.scroll_to_selected && selected {
                 ui.scroll_to_rect(rect, None);
@@ -738,23 +803,17 @@ impl Settings {
                     );
                 }
             }
-            // hint (wraps to two lines) and note
-            let (hint, note) = hint_note(&cfg, row);
+            // hint (beside the value in two lines, or under the row) and note
             let hx = (value_end + 24.0).max(vx + 96.0);
-            let reserve = if note.is_empty() { 0.0 } else { note_w + 12.0 };
             let hint_rect = Rect::from_min_max(
                 pos2(hx, top),
                 pos2(rect.right() - reserve - 16.0, top + 29.0),
             );
-            if hint_rect.width() > 20.0 {
-                let mut job = egui::text::LayoutJob::single_section(
-                    hint,
-                    egui::TextFormat::simple(FontId::monospace(theme::LABEL), theme::muted()),
-                );
-                job.wrap.max_width = hint_rect.width();
-                job.wrap.max_rows = 2;
-                job.wrap.overflow_character = Some('…');
-                let galley = ui.fonts(|f| f.layout_job(job));
+            if let Some(galley) = under {
+                ui.painter()
+                    .galley(pos2(x0, top + 31.0), galley, theme::muted());
+            } else if hint_rect.width() > 20.0 {
+                let galley = hint_galley(ui, hint, hint_rect.width(), 2);
                 let y = hint_rect.center().y - galley.size().y / 2.0;
                 ui.painter().with_clip_rect(hint_rect).galley(
                     pos2(hint_rect.left(), y),
@@ -762,13 +821,12 @@ impl Settings {
                     theme::muted(),
                 );
             }
-            if !note.is_empty() {
+            // A narrow row drops the note before it covers the value.
+            let note_x = rect.right() - note_w - 12.0;
+            if !note.is_empty() && note_x >= value_end + 8.0 {
                 ui_kit::paint_text(
                     ui,
-                    Rect::from_min_size(
-                        pos2(rect.right() - note_w - 12.0, top),
-                        vec2(note_w, 29.0),
-                    ),
+                    Rect::from_min_size(pos2(note_x, top), vec2(note_w, 29.0)),
                     note,
                     FontId::monospace(theme::LABEL),
                     theme::muted(),
@@ -778,7 +836,10 @@ impl Settings {
             if let Some(message) = error {
                 ui_kit::paint_text(
                     ui,
-                    Rect::from_min_size(pos2(vx, top + 31.0), vec2(width - label_w - 12.0, 14.0)),
+                    Rect::from_min_size(
+                        pos2(vx, top + 31.0 + under_h),
+                        vec2(width - label_w - 12.0, 14.0),
+                    ),
                     &format!("✕ {message}"),
                     FontId::monospace(theme::LABEL),
                     theme::error(),
@@ -971,10 +1032,11 @@ impl Sheet for Settings {
         // Body: groups column + rows. Leave room for capabilities + footer.
         let cells = capability_cells(cx.s).len().max(1);
         let caps_h = 30.0 + cells.div_ceil(3) as f32 * 22.0;
-        let footer_h = 40.0;
+        let footer_h = 44.0;
         let body_h = (ui.available_height() - caps_h - footer_h).clamp(160.0, 620.0);
         let (body, _) = ui.allocate_exact_size(vec2(ui.available_width(), body_h), Sense::hover());
-        let groups_w = 170.0;
+        // Narrow sheets (large text sizes) give the rows the room.
+        let groups_w = 170.0_f32.min(ui.available_width() * 0.3);
         let groups_rect = Rect::from_min_size(body.min, vec2(groups_w, body_h));
         ui.painter().vline(
             groups_rect.right(),
@@ -1124,14 +1186,25 @@ mod tests {
     }
 
     fn render(sheet: &mut Settings, s: &Snapshot, h: &mut Harness) -> egui::FullOutput {
+        render_at(sheet, s, h, vec2(1252.0, 782.0), 2)
+    }
+
+    fn render_at(
+        sheet: &mut Settings,
+        s: &Snapshot,
+        h: &mut Harness,
+        size: egui::Vec2,
+        frames: usize,
+    ) -> egui::FullOutput {
         let ctx = egui::Context::default();
         theme::install_fonts(&ctx);
         theme::apply(&ctx);
         let mut out = None;
-        for _ in 0..2 {
+        for frame in 0..frames {
             out = Some(ctx.run(
                 egui::RawInput {
-                    screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1252.0, 782.0))),
+                    screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), size)),
+                    time: Some(frame as f64 * 0.1),
                     ..Default::default()
                 },
                 |ctx| {
@@ -1311,6 +1384,54 @@ mod tests {
         assert!(t.iter().any(|x| x == "applies now"), "{t:?}");
         assert_eq!(sheet.key(Key::Esc, &mut h.cx(&s)), SheetKey::Close);
         assert!(h.toast.is_none());
+    }
+
+    #[test]
+    fn privacy_hints_stay_whole_at_every_text_size() {
+        // 1366×768 from 100% to 300%. From 250% there was no room beside
+        // the value and these hints were dropped; at 200% they were cut
+        // to a few words.
+        let s = populated();
+        let mut h = Harness::new();
+        for size in [
+            vec2(1366.0, 768.0),
+            vec2(910.7, 512.0),
+            vec2(683.0, 384.0),
+            vec2(546.4, 307.2),
+            vec2(455.3, 256.0),
+        ] {
+            let screen = Rect::from_min_size(pos2(0.0, 0.0), size);
+            for key in ["geoip_online", "insights_enabled"] {
+                let at = ROWS.iter().position(|r| r.key == key).unwrap();
+                // Selected (◀ off ▶ leaves no room for the note), and
+                // above the selected row.
+                for selected in [at, at + 1] {
+                    let mut sheet = Settings {
+                        selected,
+                        scroll_to_selected: true,
+                        ..Settings::default()
+                    };
+                    let out = render_at(&mut sheet, &s, &mut h, size, 12);
+                    let (hint, note) = hint_note(sheet.edited.as_ref().unwrap(), &ROWS[at]);
+                    let whole: String = hint.split_whitespace().collect();
+                    let shown = out.shapes.iter().any(|c| match &c.shape {
+                        egui::Shape::Text(t) => {
+                            let rect = t.galley.rect.translate(t.pos.to_vec2());
+                            t.galley.text().split_whitespace().collect::<String>() == whole
+                                && !t.galley.elided
+                                && screen.x_range().contains(rect.left())
+                                && screen.x_range().contains(rect.right())
+                                && c.clip_rect.x_range().contains(rect.right())
+                        }
+                        _ => false,
+                    });
+                    assert!(shown, "{size:?} {key}: {hint:?} in {:?}", texts(&out));
+                    if selected != at {
+                        assert!(texts(&out).iter().any(|x| x == note), "{size:?} {key}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

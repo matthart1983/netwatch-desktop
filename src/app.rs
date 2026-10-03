@@ -89,6 +89,19 @@ impl Default for Options {
 /// zoom of 1.15 that is about 1357 and 1150 window pixels.
 pub const RAIL_WIDTH: f32 = 1180.0;
 pub const COMPACT_WIDTH: f32 = 1000.0;
+/// Below this height between the title bar and the footer, in points, the
+/// timeline dock hides itself so the panels above keep their room. ☰ and
+/// the palette still show it.
+pub const DOCK_MIN_CENTRAL: f32 = 450.0;
+
+/// Each view's smallest window, in window points before text size.
+pub fn minimum_window(view: View) -> egui::Vec2 {
+    match view {
+        View::Full => vec2(900.0, 600.0),
+        View::Dense => vec2(1100.0, 680.0),
+        View::Lite => vec2(720.0, 420.0),
+    }
+}
 
 pub struct DesktopApp {
     backend: Arc<Backend>,
@@ -126,6 +139,10 @@ pub struct DesktopApp {
     armed_since: Option<Instant>,
     theme_applied: Option<&'static str>,
     full_window: Option<egui::Vec2>,
+    /// The window is too short for the dock (see [`DOCK_MIN_CENTRAL`]), and
+    /// whether it was asked for anyway this session.
+    dock_short: bool,
+    dock_forced: bool,
     /// Keys queued by footer/strip clicks, dispatched like keyboard input.
     clicked: Vec<Key>,
     quit: bool,
@@ -213,6 +230,8 @@ impl DesktopApp {
             armed_since: None,
             theme_applied: None,
             full_window: None,
+            dock_short: false,
+            dock_forced: false,
             clicked: Vec::new(),
             quit: false,
             deferred_sheet: None,
@@ -227,6 +246,11 @@ impl DesktopApp {
 
     pub fn tab(&self) -> Tab {
         self.stack.last().map(|l| l.tab).unwrap_or(Tab::Dashboard)
+    }
+    /// Whether the timeline dock shows: saved as shown, and the window
+    /// tall enough or the dock asked for anyway.
+    fn dock_visible(&self) -> bool {
+        self.prefs.show_dock && (!self.dock_short || self.dock_forced)
     }
     fn filter(&self) -> Option<Filter> {
         self.stack.last().and_then(|l| l.filter.clone())
@@ -256,16 +280,12 @@ impl DesktopApp {
         self.view = view;
         self.prefs.view = view.name().into();
         self.prefs_dirty = true;
-        let minimum = match view {
-            View::Full => vec2(900.0, 600.0),
-            View::Dense => vec2(1100.0, 680.0),
-            View::Lite => vec2(720.0, 420.0),
-        };
-        ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(minimum));
+        self.send_minimum(ctx);
+        let minimum = minimum_window(view);
         match view {
             View::Lite => {
                 let [w, h] = self.prefs.lite_window.unwrap_or([720.0, 420.0]);
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(vec2(w, h)));
+                send_inner_size(ctx, vec2(w, h));
                 if self.prefs.lite_on_top {
                     ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
                         egui::WindowLevel::AlwaysOnTop,
@@ -274,15 +294,22 @@ impl DesktopApp {
             }
             View::Full => {
                 if let Some(size) = self.full_window.filter(|s| s.x >= 900.0) {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size.max(minimum)));
+                    send_inner_size(ctx, size.max(minimum));
                 }
             }
             View::Dense => {
                 if size.x < minimum.x || size.y < minimum.y {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size.max(minimum)));
+                    send_inner_size(ctx, size.max(minimum));
                 }
             }
         }
+    }
+
+    /// Sends this view's minimum window. The text size doesn't change it:
+    /// small windows at large text sizes scroll instead.
+    fn send_minimum(&self, ctx: &egui::Context) {
+        let minimum = viewport_size(ctx, minimum_window(self.view));
+        ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(minimum));
     }
 
     pub fn zoom_dense(&mut self, panel: crate::dense::Panel) {
@@ -699,6 +726,9 @@ impl DesktopApp {
     /// zoom keys in place of egui's, and lite's on-top level.
     fn start(&mut self, ctx: &egui::Context) {
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
+        // The window was made before the monitor was known: keep its
+        // minimum on it.
+        self.send_minimum(ctx);
         ctx.set_zoom_factor(self.zoom);
         if self.view == View::Lite && self.prefs.lite_on_top {
             ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
@@ -713,6 +743,7 @@ impl DesktopApp {
     fn change_zoom(&mut self, ctx: &egui::Context, change: zoom::Change) {
         self.zoom = change.apply(self.zoom);
         ctx.set_zoom_factor(self.zoom);
+        self.send_minimum(ctx);
         if self.prefs.zoom != self.zoom {
             self.prefs.zoom = self.zoom;
             self.prefs_dirty = true;
@@ -874,9 +905,23 @@ impl DesktopApp {
             Nav::SetView(name) => self.set_view(ctx, View::from_name(name)),
             Nav::Global(key) => self.global_key(ctx, key, s),
             Nav::CycleTheme => self.cycle_theme(),
+            // Always flips what is on screen. In a short window the saved
+            // choice stays: showing the dock there is for this session.
             Nav::ToggleDock => {
-                self.prefs.show_dock = !self.prefs.show_dock;
-                self.prefs_dirty = true;
+                if self.dock_visible() {
+                    if self.dock_short {
+                        self.dock_forced = false;
+                    } else {
+                        self.prefs.show_dock = false;
+                        self.prefs_dirty = true;
+                    }
+                } else {
+                    if !self.prefs.show_dock {
+                        self.prefs.show_dock = true;
+                        self.prefs_dirty = true;
+                    }
+                    self.dock_forced = self.dock_short;
+                }
             }
             Nav::ToggleNavigator => {
                 self.prefs.nav_collapsed = !self.prefs.nav_collapsed;
@@ -1008,12 +1053,16 @@ impl DesktopApp {
             Nav::ToggleFade,
         ));
         entries.push(command(
-            if self.prefs.show_dock {
+            if self.dock_visible() {
                 "hide timeline dock"
             } else {
                 "show timeline dock"
             },
-            "dashboard · connections · diagnose",
+            if self.prefs.show_dock && !self.dock_visible() {
+                "hidden: window too short"
+            } else {
+                "dashboard · connections · diagnose"
+            },
             "",
             Nav::ToggleDock,
         ));
@@ -1359,6 +1408,12 @@ impl DesktopApp {
         let filter = self.filter();
         let mut commands = Vec::new();
         let mut nav = Vec::new();
+        // The inspector sheet stands in for the column in compact windows.
+        // Once the column fits again (a wider window, a smaller text size)
+        // the column takes over: both at once is one id on two layers.
+        if !compact && matches!(self.sheet, Some(ActiveSheet::Inspector)) {
+            self.sheet = None;
+        }
 
         egui::TopBottomPanel::top("title_bar")
             .exact_height(theme::TITLE_HEIGHT)
@@ -1445,7 +1500,8 @@ impl DesktopApp {
                 });
         }
 
-        if tab.has_dock() && self.prefs.show_dock {
+        self.dock_short = ctx.available_rect().height() < DOCK_MIN_CENTRAL;
+        if tab.has_dock() && self.dock_visible() {
             // Short windows give the panels above priority: the dock takes at
             // most a fifth of the height (and its saved height is kept).
             let cap = (ctx.screen_rect().height() * 0.2).clamp(96.0, 330.0);
@@ -1716,73 +1772,82 @@ impl DesktopApp {
     /// The title-bar menu: graph look, fade, theme, view and the sheets. Every
     /// item is also a palette command or key; the menu just gathers them.
     fn view_menu(&mut self, ui: &mut Ui, nav: &mut Vec<Nav>) {
+        ui.menu_button(
+            ui_kit::mono("☰ menu", theme::LABEL, theme::text2()),
+            |ui| {
+                ui.set_min_width(250.0);
+                ui_kit::menu_body(ui, |ui| self.view_menu_rows(ui, nav));
+            },
+        );
+    }
+
+    fn view_menu_rows(&mut self, ui: &mut Ui, nav: &mut Vec<Nav>) {
         let look = theme::graphs();
-        ui.menu_button(ui_kit::mono("☰ menu", theme::LABEL, theme::text2()), |ui| {
-            ui.set_min_width(250.0);
-            if let Some(change) = zoom::menu(ui, self.zoom) {
-                nav.push(Nav::Zoom(change));
-            }
-            ui_kit::section(ui, "graphs");
-            let mut btop = look.btop;
-            if ui
-                .checkbox(&mut btop, "btop graphs (dot cells)")
-                .on_hover_text("Every chart in the app: btop braille-style dot cells, or solid bars. Saved as graph_style.")
-                .changed()
-            {
-                nav.push(Nav::ToggleBtop);
-            }
-            let mut fade = look.fade;
-            if ui
-                .checkbox(&mut fade, "magnitude fade")
-                .on_hover_text("Colour runs dim at the baseline to full at the top. Saved as graph_fade.")
-                .changed()
-            {
-                nav.push(Nav::ToggleFade);
-            }
-            ui_kit::section(ui, "theme");
-            ui.horizontal_wrapped(|ui| {
-                for palette in theme::palettes() {
-                    if ui
-                        .selectable_label(theme::current().name == palette.name, palette.name)
-                        .clicked()
-                    {
-                        nav.push(Nav::SetTheme(palette.name.into()));
-                    }
+        if let Some(change) = zoom::menu(ui, self.zoom) {
+            nav.push(Nav::Zoom(change));
+        }
+        ui_kit::section(ui, "graphs");
+        let mut btop = look.btop;
+        if ui
+            .checkbox(&mut btop, "btop graphs (dot cells)")
+            .on_hover_text("Every chart in the app: btop braille-style dot cells, or solid bars. Saved as graph_style.")
+            .changed()
+        {
+            nav.push(Nav::ToggleBtop);
+        }
+        let mut fade = look.fade;
+        if ui
+            .checkbox(&mut fade, "magnitude fade")
+            .on_hover_text(
+                "Colour runs dim at the baseline to full at the top. Saved as graph_fade.",
+            )
+            .changed()
+        {
+            nav.push(Nav::ToggleFade);
+        }
+        ui_kit::section(ui, "theme");
+        ui.horizontal_wrapped(|ui| {
+            for palette in theme::palettes() {
+                if ui
+                    .selectable_label(theme::current().name == palette.name, palette.name)
+                    .clicked()
+                {
+                    nav.push(Nav::SetTheme(palette.name.into()));
                 }
-            });
-            ui_kit::section(ui, "view");
-            ui.horizontal(|ui| {
-                for name in ["full", "lite", "dense"] {
-                    if ui
-                        .selectable_label(self.view.name() == name, name)
-                        .clicked()
-                    {
-                        nav.push(Nav::SetView(name));
-                    }
-                }
-            });
-            let mut dock = self.prefs.show_dock;
-            if ui.checkbox(&mut dock, "timeline dock").changed() {
-                nav.push(Nav::ToggleDock);
-            }
-            let mut rail = self.prefs.nav_collapsed;
-            if ui.checkbox(&mut rail, "collapse navigator").changed() {
-                nav.push(Nav::ToggleNavigator);
-            }
-            let mut on_top = self.prefs.lite_on_top;
-            if ui.checkbox(&mut on_top, "lite window on top").changed() {
-                nav.push(Nav::ToggleLiteOnTop);
-            }
-            ui_kit::rule(ui);
-            if ui.button("settings  ,").clicked() {
-                nav.push(Nav::Key(Key::Char(',')));
-                ui.close_menu();
-            }
-            if ui.button("help  ?").clicked() {
-                nav.push(Nav::Key(Key::Char('?')));
-                ui.close_menu();
             }
         });
+        ui_kit::section(ui, "view");
+        ui.horizontal(|ui| {
+            for name in ["full", "lite", "dense"] {
+                if ui
+                    .selectable_label(self.view.name() == name, name)
+                    .clicked()
+                {
+                    nav.push(Nav::SetView(name));
+                }
+            }
+        });
+        let mut dock = self.dock_visible();
+        if ui.checkbox(&mut dock, "timeline dock").changed() {
+            nav.push(Nav::ToggleDock);
+        }
+        let mut rail = self.prefs.nav_collapsed;
+        if ui.checkbox(&mut rail, "collapse navigator").changed() {
+            nav.push(Nav::ToggleNavigator);
+        }
+        let mut on_top = self.prefs.lite_on_top;
+        if ui.checkbox(&mut on_top, "lite window on top").changed() {
+            nav.push(Nav::ToggleLiteOnTop);
+        }
+        ui_kit::rule(ui);
+        if ui.button("settings  ,").clicked() {
+            nav.push(Nav::Key(Key::Char(',')));
+            ui.close_menu();
+        }
+        if ui.button("help  ?").clicked() {
+            nav.push(Nav::Key(Key::Char('?')));
+            ui.close_menu();
+        }
     }
 
     /// The app's own window controls: three neutral dots.
@@ -2025,25 +2090,37 @@ impl DesktopApp {
             .show(ctx, |ui| {
                 theme::dense_style(ui);
                 ui.horizontal_centered(|ui| {
-                    ui.label(ui_kit::strong("◉ netwatch", size, theme::accent()));
-                    ui.label(ui_kit::mono("— dense", size, theme::text()));
-                    if let Some(s) = s {
-                        ui.label(ui_kit::mono(
-                            format!("· {}", s.interface),
+                    // Large text sizes in a small window: shorter buttons and
+                    // no Maximise when the window's own controls have it, so
+                    // every button stays on screen. The brand gives way.
+                    let narrow = ui.available_width() < 640.0;
+                    let brand = [
+                        ui_kit::strong("◉ netwatch", size, theme::accent()),
+                        ui_kit::mono("— dense", size, theme::text()),
+                        ui_kit::mono(
+                            s.map(|s| format!("· {}", s.interface)).unwrap_or_default(),
                             size,
                             theme::muted(),
-                        ));
-                    }
+                        ),
+                    ];
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                         let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
-                        if ui
-                            .small_button(if maximized { "Restore" } else { "Maximise" })
-                            .clicked()
+                        if (!narrow || !self.system_decorations)
+                            && ui
+                                .small_button(if maximized { "Restore" } else { "Maximise" })
+                                .clicked()
                         {
                             ui.ctx()
                                 .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
                         }
-                        if ui.small_button("Full view · V").clicked() {
+                        if ui
+                            .small_button(if narrow {
+                                "Full · V"
+                            } else {
+                                "Full view · V"
+                            })
+                            .clicked()
+                        {
                             self.clicked.push(Key::Char('V'));
                         }
                         let mut dense_nav = Vec::new();
@@ -2061,7 +2138,11 @@ impl DesktopApp {
                         {
                             self.toggle_freeze = true;
                         }
-                        if ui.small_button(": Commands").clicked() {
+                        if ui
+                            .small_button(if narrow { ":" } else { ": Commands" })
+                            .on_hover_text("Commands · :")
+                            .clicked()
+                        {
                             self.clicked.push(Key::Char(':'));
                         }
                         if self.frozen.is_some() {
@@ -2076,34 +2157,70 @@ impl DesktopApp {
                                 theme::error(),
                             );
                         }
+                        // The brand keeps its room while it fits; a toast
+                        // shortens to the space between.
+                        let brand_w: f32 = brand
+                            .iter()
+                            .map(|t| {
+                                egui::WidgetText::from(t.clone())
+                                    .into_galley(
+                                        ui,
+                                        Some(egui::TextWrapMode::Extend),
+                                        f32::INFINITY,
+                                        egui::TextStyle::Body,
+                                    )
+                                    .size()
+                                    .x
+                                    + ui.spacing().item_spacing.x
+                            })
+                            .sum();
                         if let Some(toast) = self.toast.as_ref().filter(|t| t.fresh()) {
+                            let room = (ui.available_width() - brand_w).max(0.0);
+                            ui.allocate_ui(vec2(room, ui.available_height()), |ui| {
+                                ui.add(
+                                    egui::Label::new(ui_kit::mono(
+                                        &toast.text,
+                                        size - 1.0,
+                                        if toast.ok {
+                                            theme::good()
+                                        } else {
+                                            theme::error()
+                                        },
+                                    ))
+                                    .truncate(),
+                                );
+                            });
+                        }
+                        // With app chrome a narrow bar keeps Maximise, so the
+                        // capture state shortens too, rather than run off the
+                        // window's left edge.
+                        if let Some(s) = s {
                             ui.add(
                                 egui::Label::new(ui_kit::mono(
-                                    &toast.text,
-                                    size - 1.0,
-                                    if toast.ok {
-                                        theme::good()
+                                    if s.interface == "demo0" || s.demo {
+                                        "DEMO"
+                                    } else if s.capture.starts_with("counters only") {
+                                        "COUNTERS ONLY"
                                     } else {
-                                        theme::error()
+                                        "CAPTURE LIVE"
                                     },
+                                    size - 1.0,
+                                    theme::muted(),
                                 ))
                                 .truncate(),
-                            );
-                        }
-                        if let Some(s) = s {
-                            ui.label(ui_kit::mono(
-                                if s.interface == "demo0" || s.demo {
-                                    "DEMO"
-                                } else if s.capture.starts_with("counters only") {
-                                    "COUNTERS ONLY"
-                                } else {
-                                    "CAPTURE LIVE"
-                                },
-                                size - 1.0,
-                                theme::muted(),
-                            ))
+                            )
                             .on_hover_text(&s.capture);
                         }
+                        ui.with_layout(egui::Layout::left_to_right(Align::Center), |ui| {
+                            for text in brand {
+                                // No room left: a bare "…" would sit on top of
+                                // the text to its right.
+                                if ui.available_width() < size {
+                                    break;
+                                }
+                                ui.add(egui::Label::new(text).truncate());
+                            }
+                        });
                     });
                 });
             });
@@ -2252,10 +2369,31 @@ fn middle_ellipsis(ui: &Ui, text: &str, font: FontId, width: f32) -> String {
     "…".into()
 }
 
-/// The window's inner size in points before UI zoom: what
-/// `ViewportCommand::InnerSize` and the saved layout use.
+/// The window's inner size in points before UI zoom: what the saved
+/// layout, the minimums and `--window-size` use.
 fn window_size(ctx: &egui::Context) -> egui::Vec2 {
     ctx.screen_rect().size() * ctx.zoom_factor()
+}
+
+/// `size`, in window points before UI zoom, as `InnerSize` and
+/// `MinInnerSize` take it. egui-winit multiplies those by the zoom in force
+/// when it applies them (this frame's: a new zoom starts next frame), so
+/// divide by it; and keep it on the monitor (`monitor` is in UI points).
+fn to_viewport(size: egui::Vec2, zoom: f32, monitor: Option<egui::Vec2>) -> egui::Vec2 {
+    let points = size / zoom;
+    match monitor.filter(|m| m.x > 0.0 && m.y > 0.0) {
+        Some(monitor) => points.min(monitor),
+        None => points,
+    }
+}
+
+fn viewport_size(ctx: &egui::Context, size: egui::Vec2) -> egui::Vec2 {
+    let monitor = ctx.input(|i| i.viewport().monitor_size);
+    to_viewport(size, ctx.zoom_factor(), monitor)
+}
+
+fn send_inner_size(ctx: &egui::Context, size: egui::Vec2) {
+    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(viewport_size(ctx, size)));
 }
 
 /// Breadcrumb parts that fit `budget` points: middle levels become one
@@ -2306,6 +2444,9 @@ fn fit_breadcrumb(ui: &Ui, mut parts: Vec<String>, budget: f32) -> Vec<String> {
     }
     parts
 }
+
+#[cfg(test)]
+mod render_matrix;
 
 #[cfg(test)]
 mod tests {
@@ -3124,6 +3265,407 @@ mod tests {
         );
         let toast = app.toast.unwrap();
         assert!(!toast.ok && toast.text.contains("not valid TOML"));
+    }
+    /// A window as egui-winit drives it at native scale 1: its size and
+    /// minimum in pixels, and the monitor's. Viewport commands resize it
+    /// the way egui-winit does, times the zoom in force for the frame.
+    struct Window {
+        ctx: egui::Context,
+        px: egui::Vec2,
+        min: Option<egui::Vec2>,
+        monitor: Option<egui::Vec2>,
+        time: f64,
+        /// Input for the next frame.
+        events: Vec<egui::Event>,
+    }
+    impl Window {
+        fn new(px: egui::Vec2) -> Self {
+            let ctx = egui::Context::default();
+            theme::install_fonts(&ctx);
+            theme::apply(&ctx);
+            Self {
+                ctx,
+                px,
+                min: None,
+                monitor: None,
+                time: 0.0,
+                events: Vec::new(),
+            }
+        }
+        fn frame(
+            &mut self,
+            app: &mut DesktopApp,
+            draw: impl FnOnce(&mut DesktopApp, &egui::Context),
+        ) -> egui::FullOutput {
+            self.time += 1.0 / 60.0;
+            let zoom = self.ctx.zoom_factor();
+            let mut input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), self.px / zoom)),
+                time: Some(self.time),
+                events: std::mem::take(&mut self.events),
+                max_texture_side: Some(8192),
+                ..Default::default()
+            };
+            let viewport = input.viewports.entry(egui::ViewportId::ROOT).or_default();
+            viewport.native_pixels_per_point = Some(1.0);
+            viewport.monitor_size = self.monitor.map(|m| m / zoom);
+            let out = self.ctx.run(input, |ctx| draw(app, ctx));
+            // A zoom set this frame starts next frame, so this is the one
+            // egui-winit applies the commands with.
+            let zoom = self.ctx.zoom_factor();
+            for command in &out.viewport_output[&egui::ViewportId::ROOT].commands {
+                match command {
+                    egui::ViewportCommand::InnerSize(size) => self.px = *size * zoom,
+                    egui::ViewportCommand::MinInnerSize(size) => self.min = Some(*size * zoom),
+                    _ => {}
+                }
+            }
+            if let Some(min) = self.min {
+                self.px = self.px.max(min);
+            }
+            out
+        }
+    }
+    /// Whether `text` is drawn whole inside `screen`, not clipped away.
+    fn on_screen(out: &egui::FullOutput, screen: Rect, text: &str) -> bool {
+        out.shapes.iter().any(|c| match &c.shape {
+            egui::Shape::Text(t) => {
+                let rect = t.galley.rect.translate(t.pos.to_vec2());
+                t.galley.text() == text
+                    && c.clip_rect.contains_rect(rect)
+                    && screen.contains_rect(rect)
+            }
+            _ => false,
+        })
+    }
+    #[test]
+    fn dense_title_buttons_stay_on_screen_at_large_text_sizes() {
+        let s = crate::backend::tests::snapshot();
+        let draw =
+            |app: &mut DesktopApp, ctx: &egui::Context| app.draw_dense(ctx, Some(&s), Some(&s));
+        let narrow = [":", "Pause · p", "☰ menu", "Full · V", "CAPTURE LIVE"];
+        let narrow_chrome = [
+            ":",
+            "Pause · p",
+            "☰ menu",
+            "Full · V",
+            "Maximise",
+            "CAPTURE LIVE",
+        ];
+        // Dense's smallest window, 1100×680 px. With --app-chrome there are
+        // no system controls, so narrow bars keep Maximise.
+        for (zoom, chrome, buttons) in [
+            (
+                1.15,
+                false,
+                [
+                    ": Commands",
+                    "Pause · p",
+                    "☰ menu",
+                    "Full view · V",
+                    "Maximise",
+                    "CAPTURE LIVE",
+                ]
+                .as_slice(),
+            ),
+            (2.0, false, narrow.as_slice()),
+            (3.0, false, narrow.as_slice()),
+            (2.0, true, narrow_chrome.as_slice()),
+            (3.0, true, narrow_chrome.as_slice()),
+        ] {
+            let mut app = app_with(Prefs::default());
+            app.view = View::Dense;
+            app.system_decorations = !chrome;
+            let mut w = Window::new(vec2(1100.0, 680.0));
+            w.frame(&mut app, |app, ctx| app.start(ctx));
+            w.frame(&mut app, |app, ctx| {
+                app.change_zoom(ctx, zoom::Change::To(zoom))
+            });
+            w.frame(&mut app, draw);
+            let out = w.frame(&mut app, draw);
+            let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(1100.0, 680.0) / zoom);
+            for button in buttons {
+                assert!(
+                    on_screen(&out, screen, button),
+                    "{zoom} {chrome}: {button} in {:?}",
+                    texts_at(&out)
+                );
+            }
+            // What gives way stops short of its neighbour, not on top of it.
+            let mut bar: Vec<(String, Rect)> = out
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Text(t) => {
+                        let rect = t.galley.rect.translate(t.pos.to_vec2());
+                        (rect.center().y < theme::DATA + 16.0)
+                            .then(|| (t.galley.text().to_string(), rect))
+                    }
+                    _ => None,
+                })
+                .collect();
+            bar.sort_by(|a, b| a.1.left().total_cmp(&b.1.left()));
+            for pair in bar.windows(2) {
+                assert!(
+                    pair[0].1.right() <= pair[1].1.left() + 0.5,
+                    "{zoom} {chrome}: {:?} overlaps {:?}",
+                    pair[0],
+                    pair[1]
+                );
+            }
+        }
+    }
+    #[test]
+    fn dense_commands_button_names_itself_on_hover_when_short() {
+        let s = crate::backend::tests::snapshot();
+        let draw =
+            |app: &mut DesktopApp, ctx: &egui::Context| app.draw_dense(ctx, Some(&s), Some(&s));
+        let mut app = app_with(Prefs::default());
+        app.view = View::Dense;
+        let mut w = Window::new(vec2(1100.0, 680.0));
+        w.frame(&mut app, |app, ctx| app.start(ctx));
+        w.frame(&mut app, |app, ctx| {
+            app.change_zoom(ctx, zoom::Change::To(3.0))
+        });
+        w.frame(&mut app, draw);
+        let out = w.frame(&mut app, draw);
+        let (_, at) = texts_at(&out)
+            .into_iter()
+            .find(|(t, _)| t == ":")
+            .expect("the short commands button");
+        w.events.push(egui::Event::PointerMoved(at));
+        // Past egui's tooltip delay.
+        let mut out = w.frame(&mut app, draw);
+        for _ in 0..60 {
+            out = w.frame(&mut app, draw);
+        }
+        assert!(
+            texts_at(&out).iter().any(|(t, _)| t == "Commands · :"),
+            "{:?}",
+            texts_at(&out)
+        );
+    }
+    fn inner_sizes(out: &egui::FullOutput) -> Vec<egui::Vec2> {
+        out.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                egui::ViewportCommand::InnerSize(size) => Some(*size),
+                _ => None,
+            })
+            .collect()
+    }
+    fn near(a: egui::Vec2, b: egui::Vec2) -> bool {
+        (a - b).length() < 0.01
+    }
+    #[test]
+    fn a_full_lite_round_trip_at_150_percent_keeps_both_window_sizes() {
+        let mut app = app_with(Prefs {
+            lite_window: Some([800.0, 480.0]),
+            ..Default::default()
+        });
+        let mut w = Window::new(vec2(1440.0, 900.0));
+        w.frame(&mut app, |app, ctx| app.start(ctx));
+        w.frame(&mut app, |app, ctx| {
+            app.change_zoom(ctx, zoom::Change::To(1.5))
+        });
+        w.frame(&mut app, |_, _| {});
+        assert_eq!(w.ctx.zoom_factor(), 1.5);
+        for trip in 0..3 {
+            let out = w.frame(&mut app, |app, ctx| app.set_view(ctx, View::Lite));
+            // The saved size, divided by the text size egui-winit multiplies by.
+            let sent = inner_sizes(&out);
+            assert!(near(sent[0], vec2(800.0, 480.0) / 1.5), "{sent:?}");
+            assert!(
+                near(w.px, vec2(800.0, 480.0)),
+                "trip {trip}: lite {:?}",
+                w.px
+            );
+            w.frame(&mut app, |_, _| {});
+            w.frame(&mut app, |app, ctx| app.set_view(ctx, View::Full));
+            assert!(
+                near(w.px, vec2(1440.0, 900.0)),
+                "trip {trip}: full {:?}",
+                w.px
+            );
+            let [lw, lh] = app.prefs.lite_window.unwrap();
+            assert!(near(vec2(lw, lh), vec2(800.0, 480.0)), "saved {lw}×{lh}");
+            w.frame(&mut app, |_, _| {});
+        }
+    }
+    #[test]
+    fn minimums_stay_in_window_points_at_every_text_size_and_fit_the_monitor() {
+        assert_eq!(
+            to_viewport(vec2(1100.0, 680.0), 2.0, None),
+            vec2(550.0, 340.0)
+        );
+        assert_eq!(
+            to_viewport(vec2(1100.0, 680.0), 1.0, Some(vec2(1024.0, 600.0))),
+            vec2(1024.0, 600.0)
+        );
+        let mut app = app_with(Prefs::default());
+        app.view = View::Lite;
+        let mut w = Window::new(vec2(720.0, 420.0));
+        w.monitor = Some(vec2(1366.0, 768.0));
+        w.frame(&mut app, |app, ctx| app.start(ctx));
+        assert!(near(w.min.unwrap(), vec2(720.0, 420.0)));
+        // Each text size resends it, and it stays 720×420 pixels: lite's
+        // minimum at 300% used to be 2160×1260, past a 1366×768 screen.
+        for _ in 0..zoom::PRESETS.len() {
+            w.frame(&mut app, |app, ctx| {
+                app.change_zoom(ctx, zoom::Change::Larger)
+            });
+            assert!(near(w.min.unwrap(), vec2(720.0, 420.0)), "{:?}", w.min);
+        }
+        w.frame(&mut app, |_, _| {});
+        assert_eq!(w.ctx.zoom_factor(), 3.0);
+        assert!(near(w.px, vec2(720.0, 420.0)), "{:?}", w.px);
+        // Dense's 1100×680 doesn't fit a 1024×600 monitor: the monitor wins.
+        w.monitor = Some(vec2(1024.0, 600.0));
+        w.frame(&mut app, |_, _| {});
+        w.frame(&mut app, |app, ctx| app.set_view(ctx, View::Dense));
+        assert!(near(w.min.unwrap(), vec2(1024.0, 600.0)), "{:?}", w.min);
+        assert!(near(w.px, vec2(1024.0, 600.0)), "{:?}", w.px);
+    }
+    #[test]
+    fn the_dock_hides_itself_in_short_windows_and_still_toggles() {
+        let s = crate::backend::tests::snapshot();
+        let draw =
+            |app: &mut DesktopApp, ctx: &egui::Context| app.draw_full(ctx, Some(&s), Some(&s));
+        let dock =
+            |out: &egui::FullOutput| texts_at(out).iter().any(|(t, _)| t.ends_with("←→ scrub"));
+        let mut app = app_with(Prefs::default());
+        let mut w = Window::new(vec2(1440.0, 900.0));
+        w.frame(&mut app, |app, ctx| app.start(ctx));
+        assert!(dock(&w.frame(&mut app, draw)), "783 pt tall at 115%");
+        // 200%: 450 pt tall, 380 between title bar and footer.
+        w.frame(&mut app, |app, ctx| {
+            app.change_zoom(ctx, zoom::Change::To(2.0))
+        });
+        w.frame(&mut app, draw);
+        assert!(!dock(&w.frame(&mut app, draw)));
+        let entry = |app: &mut DesktopApp| {
+            app.palette_entries(&s)
+                .into_iter()
+                .find(|e| e.action == Nav::ToggleDock)
+                .map(|e| (e.label, e.detail))
+                .unwrap()
+        };
+        assert_eq!(
+            entry(&mut app),
+            (
+                "show timeline dock".into(),
+                "hidden: window too short".into()
+            )
+        );
+        // Asked for, it shows for this session; the saved choice is kept.
+        app.prefs_dirty = false;
+        w.frame(&mut app, |app, ctx| {
+            app.apply_nav(ctx, Nav::ToggleDock, Some(&s))
+        });
+        assert!(dock(&w.frame(&mut app, draw)));
+        assert!(app.prefs.show_dock && !app.prefs_dirty);
+        assert_eq!(entry(&mut app).0, "hide timeline dock");
+        w.frame(&mut app, |app, ctx| {
+            app.apply_nav(ctx, Nav::ToggleDock, Some(&s))
+        });
+        assert!(!dock(&w.frame(&mut app, draw)));
+        assert!(app.prefs.show_dock);
+        // Back at 115% it shows again by itself.
+        w.frame(&mut app, |app, ctx| {
+            app.change_zoom(ctx, zoom::Change::Reset)
+        });
+        w.frame(&mut app, draw);
+        assert!(dock(&w.frame(&mut app, draw)));
+        // Hidden by choice stays hidden in any window.
+        w.frame(&mut app, |app, ctx| {
+            app.apply_nav(ctx, Nav::ToggleDock, Some(&s))
+        });
+        assert!(!dock(&w.frame(&mut app, draw)));
+        assert!(!app.prefs.show_dock && app.prefs_dirty);
+    }
+    #[test]
+    fn the_menu_scrolls_to_its_last_row_in_a_small_window() {
+        let s = crate::backend::tests::snapshot();
+        let draw =
+            |app: &mut DesktopApp, ctx: &egui::Context| app.draw_full(ctx, Some(&s), Some(&s));
+        // The full view's smallest window at 300%: 300×200 pt.
+        let mut app = app_with(Prefs::default());
+        let mut w = Window::new(vec2(900.0, 600.0));
+        w.frame(&mut app, |app, ctx| app.start(ctx));
+        w.frame(&mut app, |app, ctx| {
+            app.change_zoom(ctx, zoom::Change::To(3.0))
+        });
+        let out = w.frame(&mut app, draw);
+        let menu = texts_at(&out)
+            .into_iter()
+            .find(|(t, _)| t == "☰ menu")
+            .map(|(_, at)| at)
+            .unwrap();
+        let button = |pressed| egui::Event::PointerButton {
+            pos: menu,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        for events in [
+            vec![egui::Event::PointerMoved(menu)],
+            vec![button(true)],
+            vec![button(false)],
+            vec![egui::Event::PointerMoved(pos2(200.0, 120.0))],
+            vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: vec2(0.0, -2000.0),
+                modifiers: Default::default(),
+            }],
+        ] {
+            w.events = events;
+            w.frame(&mut app, draw);
+        }
+        let mut out = w.frame(&mut app, draw);
+        for _ in 0..30 {
+            out = w.frame(&mut app, draw);
+        }
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 200.0));
+        assert!(on_screen(&out, screen, "help  ?"), "{:?}", texts_at(&out));
+    }
+    #[test]
+    fn the_inspector_sheet_closes_when_its_column_fits_again() {
+        let s = crate::backend::tests::snapshot();
+        let draw = |app: &mut DesktopApp, ctx: &egui::Context| {
+            app.draw_full(ctx, Some(&s), Some(&s));
+            app.draw_sheet(ctx, Some(&s));
+        };
+        let open = |w: &mut Window, app: &mut DesktopApp| {
+            w.frame(app, |app, ctx| app.change_zoom(ctx, zoom::Change::To(1.5)));
+            w.frame(app, draw);
+            w.frame(app, |app, ctx| {
+                app.global_key(ctx, Key::Char('I'), Some(&s))
+            });
+            assert!(matches!(app.sheet, Some(ActiveSheet::Inspector)));
+            w.frame(app, draw);
+        };
+        // 1440×900 at 150% is 960 pt wide, so I opens the sheet. Ctrl − to
+        // 125% makes it 1152 pt: the column is back, and drawing both was a
+        // debug panic (one id on two layers).
+        let mut app = app_with(Prefs::default());
+        app.stack.last_mut().unwrap().tab = Tab::Connections;
+        let mut w = Window::new(vec2(1440.0, 900.0));
+        w.frame(&mut app, |app, ctx| app.start(ctx));
+        open(&mut w, &mut app);
+        w.frame(&mut app, |app, ctx| {
+            app.change_zoom(ctx, zoom::Change::Smaller)
+        });
+        w.frame(&mut app, draw);
+        w.frame(&mut app, draw);
+        assert_eq!(w.ctx.zoom_factor(), 1.25);
+        assert!(app.sheet.is_none());
+        // Widening the window past 1000 pt does the same.
+        open(&mut w, &mut app);
+        w.px = vec2(1600.0, 900.0);
+        w.frame(&mut app, draw);
+        w.frame(&mut app, draw);
+        assert!(app.sheet.is_none());
     }
     #[test]
     fn theme_cycles_through_every_palette_and_back() {

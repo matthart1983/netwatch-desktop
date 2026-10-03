@@ -210,13 +210,13 @@ fn main() -> eframe::Result<()> {
         .or_else(|| arg(&args, "--zoom"))
         .and_then(|n| dense_box(&n));
     let text_size = arg(&args, "--text-size").and_then(|t| zoom::parse_percent(&t));
-    let minimum = if dense {
-        [1100.0, 680.0]
+    let minimum = app::minimum_window(if dense {
+        app::View::Dense
     } else if lite {
-        [720.0, 420.0]
+        app::View::Lite
     } else {
-        [900.0, 600.0]
-    };
+        app::View::Full
+    });
     let size = arg(&args, "--window-size")
         .and_then(|v| {
             v.split_once('x')
@@ -245,7 +245,9 @@ fn main() -> eframe::Result<()> {
             .with_decorations(!app_chrome)
             .with_active(!screenshot)
             .with_mouse_passthrough(screenshot)
-            .with_inner_size([size[0].max(minimum[0]), size[1].max(minimum[1])])
+            // The window is made before the text size applies, so these
+            // are window points as they are.
+            .with_inner_size([size[0].max(minimum.x), size[1].max(minimum.y)])
             .with_min_inner_size(minimum),
         ..Default::default()
     };
