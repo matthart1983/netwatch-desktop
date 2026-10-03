@@ -174,18 +174,27 @@ impl Lite {
                 ));
                 ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                     // Lite has no title-bar menu or footer room for text
-                    // size, so it gets its own ☰.
-                    ui.menu_button(ui_kit::mono("☰", theme::DATA, theme::text2()), |ui| {
-                        ui.set_min_width(220.0);
-                        if let Some(change) = crate::zoom::menu(ui, ui.ctx().zoom_factor()) {
-                            cx.go(Nav::Zoom(change));
-                        }
-                        ui_kit::rule(ui);
-                        if ui.button("full view  L").clicked() {
-                            cx.go(Nav::SetView("full"));
-                            ui.close_menu();
-                        }
+                    // size, so it gets its own ☰: its only mouse route to
+                    // text size, so it is labelled and at least 24 pt tall.
+                    let menu = ui.scope(|ui| {
+                        ui.spacing_mut().interact_size.y = 24.0;
+                        ui.menu_button(
+                            ui_kit::mono("☰ menu", theme::LABEL, theme::text2()),
+                            |ui| {
+                                ui.set_min_width(220.0);
+                                if let Some(change) = crate::zoom::menu(ui, ui.ctx().zoom_factor())
+                                {
+                                    cx.go(Nav::Zoom(change));
+                                }
+                                ui_kit::rule(ui);
+                                if ui.button("full view  L").clicked() {
+                                    cx.go(Nav::SetView("full"));
+                                    ui.close_menu();
+                                }
+                            },
+                        )
                     });
+                    menu.inner.response.on_hover_text("text size · full view");
                     ui.add_space(6.0);
                     if cx.paused {
                         ui_kit::chip(ui, "⏸ paused", theme::raised());

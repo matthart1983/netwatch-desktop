@@ -2682,6 +2682,9 @@ mod tests {
                 .find(|(t, _)| t == text)
                 .map(|(_, at)| at)
                 .unwrap_or_else(|| panic!("no {text:?} on screen"));
+            self.click_at(app, at);
+        }
+        fn click_at(&mut self, app: &mut DesktopApp, at: egui::Pos2) {
             let button = |pressed| egui::Event::PointerButton {
                 pos: at,
                 button: egui::PointerButton::Primary,
@@ -2840,7 +2843,7 @@ mod tests {
         app.view = View::Lite;
         let mut f = Frames::new();
         f.launch(&mut app);
-        f.click(&mut app, "☰");
+        f.click(&mut app, "☰ menu");
         f.click(&mut app, "+");
         assert_eq!((f.ctx.zoom_factor(), app.prefs.zoom), (1.25, 1.25));
         // The toast shows in lite's title row.
@@ -2850,6 +2853,43 @@ mod tests {
             .any(|(t, _)| t.starts_with("text size 125%")));
         f.click(&mut app, "full view  L");
         assert_eq!(app.view(), View::Full);
+    }
+    #[test]
+    fn lites_menu_is_labelled_24_pt_tall_and_says_what_it_holds() {
+        let lite = || {
+            let mut app = app_with(Prefs::default());
+            app.view = View::Lite;
+            let mut f = Frames::new();
+            f.launch(&mut app);
+            let out = f.run(&mut app, vec![]);
+            let at = texts_at(&out)
+                .into_iter()
+                .find(|(t, _)| t == "☰ menu")
+                .map(|(_, at)| at)
+                .expect("lite's ☰ is labelled");
+            (app, f, at)
+        };
+        let open = |app: &mut DesktopApp, f: &mut Frames| {
+            let out = f.run(app, vec![]);
+            texts_at(&out).iter().any(|(t, _)| t == "full view  L")
+        };
+        // 11 pt above or below the label's middle is still the button.
+        for dy in [-11.0, 11.0] {
+            let (mut app, mut f, at) = lite();
+            f.click_at(&mut app, at + vec2(0.0, dy));
+            assert!(open(&mut app, &mut f), "click {dy} pt from the middle");
+        }
+        let (mut app, mut f, at) = lite();
+        f.run(&mut app, vec![egui::Event::PointerMoved(at)]);
+        let mut tip = false;
+        for _ in 0..60 {
+            let out = f.run(&mut app, vec![]);
+            tip |= texts_at(&out)
+                .iter()
+                .any(|(t, _)| t == "text size · full view");
+        }
+        assert!(tip, "hovering ☰ says what is in it");
+        assert!(!open(&mut app, &mut f));
     }
     #[test]
     fn first_run_offers_three_sizes_that_apply_at_once() {
