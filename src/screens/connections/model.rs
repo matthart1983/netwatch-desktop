@@ -32,6 +32,8 @@ pub struct Verdict {
     /// Index into `s.issues` when an open issue names this socket's peer.
     pub issue: Option<usize>,
     pub drift: bool,
+    /// The egress block entry this socket's destination matched.
+    pub blocked: Option<String>,
 }
 
 impl Verdict {
@@ -44,6 +46,7 @@ impl Verdict {
             socket: None,
             issue: None,
             drift: false,
+            blocked: None,
         }
     }
     pub fn is_some(&self) -> bool {
@@ -124,7 +127,8 @@ pub fn state_key(state: &str) -> String {
 }
 
 /// The engine's verdict for a socket, else an open issue that names its
-/// peer, else egress drift, else `idle` for sockets winding down.
+/// peer, else a blocked egress destination, else egress drift, else `idle`
+/// for sockets winding down.
 pub fn verdict(s: &Snapshot, c: &Connection) -> Verdict {
     if let Some(v) = s
         .socket_verdicts
@@ -142,6 +146,7 @@ pub fn verdict(s: &Snapshot, c: &Connection) -> Verdict {
             socket: Some(*v),
             issue: None,
             drift: false,
+            blocked: None,
         };
     }
     let ip = remote_ip(c);
@@ -171,19 +176,40 @@ pub fn verdict(s: &Snapshot, c: &Connection) -> Verdict {
                 socket: None,
                 issue: Some(index),
                 drift: false,
+                blocked: None,
             };
         }
         if let (Some(name), (_, Some(port))) = (&c.process_name, split_addr(&c.remote_addr)) {
             use netwatch::collectors::egress::Verdict as E;
             let host = s.host_name(ip);
             let labels = [Some(ip.to_string()), host, sni(c).map(str::to_string)];
-            let drift = labels.iter().flatten().any(|label| {
-                matches!(
-                    s.egress.verdicts.get(&(name.clone(), label.clone(), port)),
-                    Some(E::Drift | E::Undeclared)
-                )
-            });
-            if drift {
+            let verdicts: Vec<&E> = labels
+                .iter()
+                .flatten()
+                .filter_map(|label| s.egress.verdicts.get(&(name.clone(), label.clone(), port)))
+                .collect();
+            // netwatch checks the block list before the allowlist, so a
+            // blocked destination is never also drift. It is the finding
+            // that alerts by default, so it ranks above drift.
+            if let Some(reason) = verdicts.iter().find_map(|v| match v {
+                E::Blocked(reason) => Some(reason.clone()),
+                _ => None,
+            }) {
+                return Verdict {
+                    label: "blocked · policy".into(),
+                    color: Some(theme::error()),
+                    drive: Drive::None,
+                    concern: 4,
+                    socket: None,
+                    issue: None,
+                    drift: false,
+                    blocked: Some(reason),
+                };
+            }
+            if verdicts
+                .iter()
+                .any(|v| matches!(v, E::Drift | E::Undeclared))
+            {
                 return Verdict {
                     label: "new · not in policy".into(),
                     color: Some(theme::violet()),
@@ -192,6 +218,7 @@ pub fn verdict(s: &Snapshot, c: &Connection) -> Verdict {
                     socket: None,
                     issue: None,
                     drift: true,
+                    blocked: None,
                 };
             }
         }

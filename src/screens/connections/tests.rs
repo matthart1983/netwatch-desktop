@@ -812,3 +812,38 @@ fn folded_by_default_still_opens_the_groups_that_matter() {
         .iter()
         .any(|(k, c)| *k == quiet_key && *c));
 }
+
+#[test]
+fn a_blocked_destination_outranks_drift_and_names_its_block_entry() {
+    use netwatch::collectors::egress::Verdict as E;
+    let mut s = fixture();
+    let c = conn(
+        Some("curl"),
+        Some(45),
+        "10.88.0.4:40210",
+        "203.0.113.66:443",
+        "ESTABLISHED",
+    );
+    let key = ("curl".to_string(), "203.0.113.66".to_string(), 443);
+    Arc::make_mut(&mut s.egress)
+        .verdicts
+        .insert(key.clone(), E::Drift);
+    let drift = verdict(&s, &c);
+    assert_eq!(drift.label, "new · not in policy");
+    assert!(drift.drift && drift.blocked.is_none());
+    // Adding a block entry must not make the destination quieter.
+    let reason = "203.0.113.66 is blocked (203.0.113.0/24)";
+    Arc::make_mut(&mut s.egress)
+        .verdicts
+        .insert(key, E::Blocked(reason.into()));
+    let blocked = verdict(&s, &c);
+    assert_eq!(blocked.label, "blocked · policy");
+    assert_eq!(blocked.color, Some(theme::error()));
+    assert!(blocked.concern > drift.concern);
+    assert_eq!(blocked.blocked.as_deref(), Some(reason));
+    assert!(!blocked.drift);
+    assert_eq!(
+        inspector::reasoning(&s, &c, &blocked, &[]),
+        "curl → 203.0.113.66:443 matches the egress block list: 203.0.113.66 is blocked (203.0.113.0/24) — flagged, not dropped."
+    );
+}

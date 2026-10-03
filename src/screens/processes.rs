@@ -370,13 +370,19 @@ pub fn packets_filter(sockets: &[&Connection]) -> Option<String> {
     )
 }
 
-/// Policy state for a process: `ruled · N` / `no rule` / `not linted`.
+/// Policy state for a process: `ruled · N` / `no rule` / `not linted`, then
+/// `· N blocked` when the block list matched any of its destinations.
 pub fn policy_state(s: &Snapshot, name: &str) -> (String, Color32) {
     let e = &s.egress;
     let Some(policy) = e.policy.as_ref() else {
         return ("not linted · no policy loaded".into(), theme::muted());
     };
-    match policy.process.get(name) {
+    let blocked = e
+        .verdicts
+        .iter()
+        .filter(|((p, _, _), v)| p == name && egress_model::is_blocked(v))
+        .count();
+    let (text, color) = match policy.process.get(name) {
         Some(rule) => {
             let n = rule.allow_sni.len() + rule.allow_asn.len() + rule.allow_ip.len();
             let drift = e
@@ -392,6 +398,10 @@ pub fn policy_state(s: &Snapshot, name: &str) -> (String, Color32) {
         }
         None if policy.strict => ("no rule · undeclared".into(), theme::warn()),
         None => ("no rule".into(), theme::text()),
+    };
+    match blocked {
+        0 => (text, color),
+        n => (format!("{text} · {n} blocked"), theme::error()),
     }
 }
 
