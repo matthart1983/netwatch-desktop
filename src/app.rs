@@ -1038,17 +1038,34 @@ impl DesktopApp {
         ));
         // Tab never reaches a ☰ row, so the palette is the keyboard's way
         // to every text size.
-        let now = format!("now {}", zoom::label(self.zoom));
-        for (label, key, change) in [
-            ("text size: larger".to_string(), "+", zoom::Change::Larger),
-            ("text size: smaller".to_string(), "−", zoom::Change::Smaller),
+        // The details carry the words people search for: zoom, font, bigger.
+        let now = zoom::label(self.zoom);
+        for (label, words, key, change) in [
+            (
+                "text size: larger".to_string(),
+                "zoom in, bigger font",
+                "+",
+                zoom::Change::Larger,
+            ),
+            (
+                "text size: smaller".to_string(),
+                "zoom out, smaller font",
+                "−",
+                zoom::Change::Smaller,
+            ),
             (
                 format!("text size: reset to {}", zoom::label(zoom::DEFAULT)),
+                "zoom, font size",
                 "0",
                 zoom::Change::Reset,
             ),
         ] {
-            entries.push(command(&label, &now, &zoom::chord(key), Nav::Zoom(change)));
+            entries.push(command(
+                &label,
+                &format!("now {now} · {words}"),
+                &zoom::chord(key),
+                Nav::Zoom(change),
+            ));
         }
         for preset in zoom::PRESETS {
             entries.push(command(
@@ -2934,6 +2951,24 @@ mod tests {
         });
         let _ = ctx.run(Default::default(), |_| {});
         assert_eq!((ctx.zoom_factor(), app.prefs.zoom), (2.5, 2.5));
+    }
+    #[test]
+    fn the_palette_finds_text_size_by_zoom_font_and_bigger() {
+        let mut app = app_with(Prefs::default());
+        let s = crate::backend::tests::snapshot();
+        let entries = app.palette_entries(&s);
+        let top = |query: &str| {
+            let mut palette = Palette::new(entries.clone(), Vec::new());
+            palette.query = query.into();
+            palette.matches().first().map(|e| e.label.clone())
+        };
+        for query in ["zoom", "font", "font size"] {
+            let top = top(query).unwrap_or_default();
+            assert!(top.starts_with("text size: "), "{query}: {top}");
+        }
+        assert_eq!(top("bigger").as_deref(), Some("text size: larger"));
+        assert_eq!(top("zoom in").as_deref(), Some("text size: larger"));
+        assert_eq!(top("zoom out").as_deref(), Some("text size: smaller"));
     }
     #[test]
     fn text_size_flag_is_for_this_launch_only() {
