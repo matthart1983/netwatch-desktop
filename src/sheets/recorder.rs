@@ -285,7 +285,8 @@ impl Recorder {
         } else {
             "xdg-open"
         };
-        if let Err(e) = std::fs::create_dir_all(dir) {
+        // Owner-only like everything the exports directory holds.
+        if let Err(e) = netwatch::owner_only::create_dir_all(dir) {
             return Toast::err(format!("✕ open failed · {} · {e}", dir.display()));
         }
         match std::process::Command::new(opener).arg(dir).spawn() {
@@ -651,7 +652,7 @@ impl Recorder {
                 "sandbox off",
                 " · the export path is not restricted",
             ),
-            Some(_) if grant.as_deref() == Some(s.export_dir.as_path()) => {
+            Some(_) if grant.is_some() && grant == s.export_dir => {
                 check(ui, Some(true), "inside the sandbox's export grant", "")
             }
             Some(_) => check(
@@ -874,10 +875,13 @@ impl Sheet for Recorder {
                     }
                     _ => "<freeze time>".to_string(),
                 };
-                format!(
-                    "{}/netwatch_incident_{stamp}/",
-                    tilde(&s.export_dir.display().to_string())
-                )
+                match &s.export_dir {
+                    Some(dir) => format!(
+                        "{}/netwatch_incident_{stamp}/",
+                        tilde(&dir.display().to_string())
+                    ),
+                    None => "no cache directory · set HOME to export".to_string(),
+                }
             }
         };
         let mut columns_rect = Rect::NOTHING;
@@ -1017,8 +1021,11 @@ impl Sheet for Recorder {
                     .as_ref()
                     .and_then(|a| exported_path(&a.text))
                     .filter(|p| p.exists())
-                    .unwrap_or_else(|| s.export_dir.clone());
-                let toast = self.open_dir(&dir);
+                    .or_else(|| s.export_dir.clone());
+                let toast = match dir {
+                    Some(dir) => self.open_dir(&dir),
+                    None => Toast::err("✕ open failed · no cache directory · set HOME"),
+                };
                 self.open_result = Some((toast.ok, toast.text.clone()));
                 *cx.toast = Some(toast);
             }
