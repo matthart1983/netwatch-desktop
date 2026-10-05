@@ -1,6 +1,6 @@
 [package]
 name = "netwatch-desktop"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 # netwatch-tui 0.35.1 declares no rust-version, but it calls
 # AtomicUsize::try_update (stable in 1.95) on every platform and

@@ -2,7 +2,7 @@
 
 All notable changes to netwatch desktop are listed here, newest first.
 
-## [0.2.0] - unreleased
+## [0.2.0] - 2026-10-05
 
 The first public release. A fresh clone now builds from crates.io, text size has controls anyone can find, and nothing panics or drops out of reach at any size from 100% to 300%. Capture asks for one capability, exports are private to your user, and settings saves stop deleting what the terminal app wrote. Linux gets a .deb, an .rpm and a tarball. macOS and Windows build from source and are experimental.
 
